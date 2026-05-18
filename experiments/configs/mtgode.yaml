@@ -1,0 +1,41 @@
+# MTGODE — Multi-scale Temporal Graph ODE
+# Continuous-time model (Praise's workstream).
+# ODE solver settings: loose tolerances during training, tight at evaluation.
+# See mtgode_adapter.py and modules/ode_integrator.py.
+
+model:
+  name: mtgode
+  hidden_dim: 40
+  num_layers: 2
+  dropout: 0.3
+  # Adaptive graph construction (from original MTGODE repo)
+  graph_constructor:
+    k: 10                 # top-k neighbours in learned graph
+    alpha: 3              # saturation rate of tanh
+
+training:
+  learning_rate: 0.001
+  batch_size: 32
+  epochs: 100
+  early_stopping_patience: 15
+  gradient_clip_max_norm: 5.0
+  scheduler:
+    type: CosineAnnealingWarmRestarts
+    T_0: 10
+    T_mult: 2
+    eta_min: 1.0e-6
+
+ode:
+  method: dopri5          # torchdiffeq solver
+  adjoint: true           # use adjoint method for memory-efficient backprop
+  train_rtol: 1.0e-3
+  train_atol: 1.0e-4
+  eval_rtol: 1.0e-5
+  eval_atol: 1.0e-6
+
+data:
+  input_len: 12           # T — TODO: confirm (Open Question #1)
+  horizon: 12             # H — TODO: confirm (Open Question #1)
+
+evaluation:
+  vpt_epsilon: 0.5        # TODO: confirm from Gaibie et al. (2024)

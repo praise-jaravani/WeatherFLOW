@@ -1,0 +1,41 @@
+Bootstrap: docker
+From: nvcr.io/nvidia/pytorch:24.01-py3
+# NVIDIA NGC PyTorch image pre-validated for A100 (sm_80 in CUDA arch list).
+# Generic PyTorch Docker images often omit sm_80 — always use an NGC image for A100.
+# Update the tag (YY.MM) when a new NGC release is needed; rebuild and re-upload container.sif.
+# TODO: confirm the exact NGC tag against UCT HPC's installed CUDA driver before building.
+
+%labels
+    Maintainer WeatherFlow Team (UCT CSC4019Z 2026)
+    Description WEATHER-FLOW STGNN benchmarking pipeline
+
+%post
+    # Upgrade pip and install all Python dependencies from requirements.txt
+    pip install --upgrade pip
+    pip install --no-cache-dir -r /weatherflow/requirements.txt
+
+%files
+    # Copy the project into the container at build time.
+    # Note: cloned repos are included; container.sif therefore captures the
+    # exact commit of each model repo at build time (reproducibility).
+    . /weatherflow
+
+%environment
+    export PYTHONPATH=/weatherflow:$PYTHONPATH
+    export PYTHONUNBUFFERED=1
+    # Suppress tokenizers parallelism warning
+    export TOKENIZERS_PARALLELISM=false
+
+%runscript
+    cd /weatherflow
+    exec python cli.py "$@"
+
+# Build command (run on Linux or WSL2 — Singularity must be installed):
+#   singularity build --fakeroot container.sif container.def
+#
+# Verify on HPC after uploading:
+#   singularity exec --nv container.sif python -c "import torch; print(torch.cuda.is_available())"
+# Must return True. If False, select a different NGC image tag with sm_80 support.
+#
+# Upload path on UCT HPC (adjust username):
+#   scp container.sif <username>@hpc.uct.ac.za:/home/<username>/weatherflow/container.sif

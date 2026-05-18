@@ -1,0 +1,47 @@
+# WEATHER-FLOW dependencies
+# Single source of truth for package versions — used by both:
+#   - environment.yml (local conda dev environment)
+#   - container.def   (Singularity HPC container via %post pip install)
+#
+# PyTorch version: must include sm_80 (A100) in compiled CUDA arch list.
+# Use NGC-sourced torch or a wheel built with sm_80 explicitly.
+# Pin versions once confirmed against UCT HPC's CUDA driver.
+
+# --- Core deep learning ---
+torch>=2.1.0              # TODO: pin to version confirmed against HPC CUDA driver
+torchvision>=0.16.0
+
+# --- Graph neural networks ---
+torch-geometric>=2.4.0
+torch-scatter>=2.1.2
+torch-sparse>=0.6.18
+
+# --- ODE solvers (MTGODE, ClimODE) ---
+torchdiffeq>=0.2.3
+
+# --- Data ---
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.11.0
+scikit-learn>=1.3.0
+xlrd>=2.0.1               # reading legacy .xls SAWS files (xls not xlsx)
+netCDF4>=1.6.0            # reading ERA5 .nc files
+xarray>=2023.6.0          # higher-level NetCDF interface (optional ERA5 helper)
+cdsapi>=0.6.1             # Copernicus CDS API for download_era5.py
+
+# --- Computational metrics ---
+torchinfo>=1.8.0          # FLOPs and parameter counting (eval/computational.py)
+
+# --- Config and CLI ---
+pyyaml>=6.0
+
+# --- Progress and display ---
+tqdm>=4.65.0
+rich>=13.5.0
+
+# --- Experiment tracking ---
+mlflow>=2.8.0
+
+# --- Plotting ---
+matplotlib>=3.7.0
+seaborn>=0.12.0

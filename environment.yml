@@ -1,0 +1,27 @@
+name: weatherflow
+
+# Python version: match UCT HPC module as closely as possible.
+# TODO: confirm Python version against HPC module list before final pin.
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.10
+  - pip
+
+  - pip:
+    - -r requirements.txt
+
+# Usage:
+#   Create:  conda env create -f environment.yml
+#   Update:  conda env update -f environment.yml --prune
+#   Activate: conda activate weatherflow
+#
+# IMPORTANT: whenever a dependency is added to requirements.txt, run:
+#   conda env update -f environment.yml --prune
+# AND rebuild the Singularity container (singularity build --fakeroot container.sif container.def)
+# AND re-upload container.sif to HPC.
+# All three must stay in sync.

@@ -1,0 +1,31 @@
+[submodule "models/baselines/AGCRN"]
+	path = models/baselines/AGCRN
+	url = https://github.com/LeiBAI/AGCRN
+
+[submodule "models/baselines/CLCRN"]
+	path = models/baselines/CLCRN
+	url = https://github.com/BIRD-TAO/CLCRN
+
+[submodule "models/continuous_time/MTGODE"]
+	path = models/continuous_time/MTGODE
+	url = https://github.com/TrustAGI-Lab/MTGODE
+
+[submodule "models/continuous_time/ClimODE"]
+	path = models/continuous_time/ClimODE
+	url = https://github.com/Aalto-QuML/ClimODE
+
+[submodule "models/lightweight/STLGRU"]
+	path = models/lightweight/STLGRU
+	url = https://github.com/Kishor-Bhaumik/STLGRU
+
+[submodule "models/lightweight/Lite-STGNN"]
+	path = models/lightweight/Lite-STGNN
+	url = https://github.com/HTMoges/Lite-STGNN
+
+[submodule "models/diffusion/DiffSTG"]
+	path = models/diffusion/DiffSTG
+	url = https://github.com/wenhaomin/DiffSTG
+
+[submodule "models/diffusion/USTD"]
+	path = models/diffusion/USTD
+	url = https://github.com/hjf1997/USTD
