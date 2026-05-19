@@ -26,12 +26,16 @@ training:
     eta_min: 1.0e-6
 
 ode:
-  method: dopri5          # torchdiffeq solver
-  adjoint: true           # use adjoint method for memory-efficient backprop
-  train_rtol: 1.0e-3
-  train_atol: 1.0e-4
-  eval_rtol: 1.0e-5
-  eval_atol: 1.0e-6
+  # MTGODE's ODEBlock only accepts 'euler' or 'rk4' (raises ValueError for others)
+  method_1: euler         # outer temporal ODE — fixed-step solvers only
+  method_2: euler         # inner graph ODE (inside CGP layers)
+  adjoint: true           # adjoint method for memory-efficient backprop
+  time_1: 1.2
+  step_size_1: 0.4
+  time_2: 1.0
+  step_size_2: 0.25
+  rtol: 1.0e-4
+  atol: 1.0e-3
 
 data:
   input_len: 12           # T — TODO: confirm (Open Question #1)

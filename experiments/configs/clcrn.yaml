@@ -1,12 +1,15 @@
-# CLCRN — Chebyshev-based LSTM Convolutional Recurrent Network
+# CLCRN — Conditional Local Convolution Recurrent Network
 # Baseline model. Hyperparameters follow Gaibie et al. (2024) unless noted.
-# TODO: confirm learning_rate, hidden_dim, cheb_k with team once Gaibie et al. values are locked.
+# TODO: confirm learning_rate, hidden_dim, num_layers with team once Gaibie et al. values are locked.
 
 model:
   name: clcrn
   hidden_dim: 64          # TODO: confirm from Gaibie et al. (2024)
   num_layers: 2
-  cheb_k: 3               # Chebyshev polynomial order
+  embed_dim: 16           # node embedding dimension
+  k_neighbors: 25         # k-NN graph size for spherical geometry (CLCRN default)
+  lck_structure: [4, 8]   # CLConv kernel layer sizes
+  max_view: 2             # max spatial hops in CLConv
 
 training:
   learning_rate: 0.001    # TODO: confirm from Gaibie et al. (2024)

@@ -17,26 +17,36 @@ import numpy as np
 
 def mse_loss() -> nn.Module:
     """Return the MSE loss module used for Phase 1 regression."""
-    raise NotImplementedError
+    return nn.MSELoss()
 
 
 def compute_class_weights(train_labels: np.ndarray) -> tuple:
     """
     Compute positive/negative class weights from training label distribution.
 
+    Args:
+        train_labels: flat or multi-dimensional binary array of training labels.
+
     Returns:
         (w_0, w_1) where w_1 = (1 - pos_rate) / pos_rate (inverse frequency).
     """
-    raise NotImplementedError
+    labels = train_labels.ravel().astype(float)
+    pos_rate = labels.mean().clip(1e-6, 1 - 1e-6)
+    w_1 = (1.0 - pos_rate) / pos_rate
+    w_0 = 1.0
+    return float(w_0), float(w_1)
 
 
 def wbce_loss(w_0: float, w_1: float, device: torch.device) -> nn.Module:
     """
     Return a Weighted Binary Cross-Entropy loss module.
 
+    BCEWithLogitsLoss uses pos_weight = w_1 / w_0 to upweight positive samples.
+
     Args:
         w_0: weight for the negative (non-extreme) class.
         w_1: weight for the positive (extreme) class.
         device: torch device the weight tensor should live on.
     """
-    raise NotImplementedError
+    pos_weight = torch.tensor([w_1 / w_0], device=device)
+    return nn.BCEWithLogitsLoss(pos_weight=pos_weight)

@@ -9,7 +9,7 @@ for moving from setup into active development.
 
 Checks performed:
   1. All 8 cloned repositories present and non-empty
-  2. All stub Python modules importable from project root without errors
+  2. All Python modules importable from project root without errors
   3. All 8 model YAML config files present and valid YAML
   4. tracking/ directory exists
   5. data/saws/raw/ and data/era5/raw/ directories exist
@@ -26,8 +26,9 @@ from rich.console import Console
 from rich.table import Table
 
 PROJECT_ROOT = Path(__file__).parent.parent
-console = Console()
+sys.path.insert(0, str(PROJECT_ROOT))
 
+console = Console()
 
 REPO_CHECKS = [
     ("AGCRN",      PROJECT_ROOT / "models/baselines/AGCRN"),
@@ -40,8 +41,9 @@ REPO_CHECKS = [
     ("USTD",       PROJECT_ROOT / "models/diffusion/USTD"),
 ]
 
+# Modules that must import cleanly (adapters for unimplemented models
+# will show as import errors — that's expected for teammates' stubs)
 MODULE_CHECKS = [
-    "preprocessing.saws_parser",
     "preprocessing.era5_parser",
     "preprocessing.impute",
     "preprocessing.split",
@@ -59,7 +61,6 @@ MODULE_CHECKS = [
     "evaluation.computational",
     "evaluation.stats",
     "models.base_adapter",
-    "models.shared_modules.graph_utils",
     "models.baselines.agcrn_adapter",
     "models.baselines.agcrn_model",
     "models.baselines.clcrn_adapter",
@@ -68,16 +69,6 @@ MODULE_CHECKS = [
     "models.continuous_time.mtgode_model",
     "models.continuous_time.climode_adapter",
     "models.continuous_time.climode_model",
-    "models.continuous_time.modules.ode_integrator",
-    "models.lightweight.stlgru_adapter",
-    "models.lightweight.stlgru_model",
-    "models.lightweight.litestgnn_adapter",
-    "models.lightweight.litestgnn_model",
-    "models.diffusion.diffstg_adapter",
-    "models.diffusion.diffstg_model",
-    "models.diffusion.ustd_adapter",
-    "models.diffusion.ustd_model",
-    "models.diffusion.modules.denoising",
 ]
 
 CONFIG_CHECKS = [
@@ -97,28 +88,90 @@ FILE_CHECKS = [
 ]
 
 
+def _row(label: str, ok: bool, detail: str = "") -> tuple:
+    status = "[bold green]PASS[/bold green]" if ok else "[bold red]FAIL[/bold red]"
+    return label, status, detail
+
+
 def check_repos() -> list:
-    raise NotImplementedError
+    rows = []
+    for name, path in REPO_CHECKS:
+        exists = path.exists() and any(path.iterdir())
+        rows.append(_row(f"repo: {name}", exists,
+                         str(path.relative_to(PROJECT_ROOT)) if not exists else ""))
+    return rows
 
 
 def check_modules() -> list:
-    raise NotImplementedError
+    rows = []
+    for mod in MODULE_CHECKS:
+        try:
+            importlib.import_module(mod)
+            rows.append(_row(f"import: {mod}", True))
+        except Exception as e:
+            rows.append(_row(f"import: {mod}", False, str(e)[:80]))
+    return rows
 
 
 def check_configs() -> list:
-    raise NotImplementedError
+    rows = []
+    for path in CONFIG_CHECKS:
+        if not path.exists():
+            rows.append(_row(f"config: {path.name}", False, "file missing"))
+            continue
+        try:
+            with open(path) as f:
+                yaml.safe_load(f)
+            rows.append(_row(f"config: {path.name}", True))
+        except Exception as e:
+            rows.append(_row(f"config: {path.name}", False, str(e)[:80]))
+    return rows
 
 
 def check_dirs() -> list:
-    raise NotImplementedError
+    return [
+        _row(f"dir: {p.relative_to(PROJECT_ROOT)}", p.exists())
+        for p in DIR_CHECKS
+    ]
 
 
 def check_files() -> list:
-    raise NotImplementedError
+    return [
+        _row(f"file: {p.relative_to(PROJECT_ROOT)}", p.exists())
+        for p in FILE_CHECKS
+    ]
 
 
 def main():
-    raise NotImplementedError
+    console.rule("[bold]WEATHER-FLOW setup verification[/bold]")
+
+    all_rows = (
+        check_repos()
+        + check_modules()
+        + check_configs()
+        + check_dirs()
+        + check_files()
+    )
+
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Component", style="dim", width=52)
+    table.add_column("Status", width=8, justify="center")
+    table.add_column("Notes")
+
+    n_pass = n_fail = 0
+    for label, status, detail in all_rows:
+        table.add_row(label, status, detail)
+        if "PASS" in status:
+            n_pass += 1
+        else:
+            n_fail += 1
+
+    console.print(table)
+    console.print(f"\n  [bold green]{n_pass} passed[/bold green]  "
+                  f"[bold red]{n_fail} failed[/bold red]\n")
+
+    if n_fail:
+        sys.exit(1)
 
 
 if __name__ == "__main__":

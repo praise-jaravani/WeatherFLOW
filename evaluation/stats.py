@@ -13,6 +13,7 @@ of the metric distribution.
 Results are stored in the Phase 2 summary output.
 """
 
+import itertools
 import numpy as np
 from scipy import stats
 from typing import Dict, List, Tuple
@@ -31,7 +32,8 @@ def wilcoxon_test(
     Returns:
         (statistic, p_value)
     """
-    raise NotImplementedError
+    result = stats.wilcoxon(scores_a, scores_b, alternative=alternative)
+    return float(result.statistic), float(result.pvalue)
 
 
 def compare_families(
@@ -46,7 +48,12 @@ def compare_families(
     Returns:
         Dict mapping (family_a, family_b) → (statistic, p_value).
     """
-    raise NotImplementedError
+    results = {}
+    for (name_a, scores_a), (name_b, scores_b) in itertools.combinations(
+        family_scores.items(), 2
+    ):
+        results[(name_a, name_b)] = wilcoxon_test(scores_a, scores_b)
+    return results
 
 
 def compare_to_baselines(
@@ -59,4 +66,8 @@ def compare_to_baselines(
     Returns:
         Dict mapping (model_name, baseline_name) → (statistic, p_value).
     """
-    raise NotImplementedError
+    results = {}
+    for model_name, m_scores in model_scores.items():
+        for baseline_name, b_scores in baseline_scores.items():
+            results[(model_name, baseline_name)] = wilcoxon_test(m_scores, b_scores)
+    return results

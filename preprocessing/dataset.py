@@ -1,20 +1,16 @@
 """
 PyTorch Dataset and DataLoader factory for sliding-window spatio-temporal data.
 
-Wraps the preprocessed split tensors in a Dataset subclass that yields
-(x, y) pairs via a sliding window:
-  - x: historical window of T timesteps, shape (T, N, d)
-  - y: target of the next H timesteps — shape (H, N, d) for regression
-       or (H, N) for classification (binary extreme event labels)
-
-DataLoaders are constructed with shuffle=True for train and shuffle=False for
-val/test, with a configurable batch size and number of workers.
+Yields (x, y) pairs via a sliding window:
+  x: historical window of shape (input_len, N, d)
+  y: regression target  shape (horizon, N, d)
+     OR classification target shape (horizon, N) — majority vote over vars
 """
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
-from typing import Tuple, Optional
+from typing import Optional, Tuple
 
 
 class STGNNDataset(Dataset):
@@ -30,19 +26,39 @@ class STGNNDataset(Dataset):
     ):
         """
         Args:
-            features: normalised feature array, shape (T, N, d).
-            labels: binary label array, shape (T, N, d) or None for regression.
-            input_len: number of historical timesteps T fed as input.
-            horizon: number of future timesteps H to predict.
-            task: 'regression' or 'classification'.
+            features:  (T, N, d) float32 normalised array.
+            labels:    (T, N, d) int8 binary labels, or None for regression.
+            input_len: historical context length.
+            horizon:   prediction horizon.
+            task:      'regression' or 'classification'.
         """
-        raise NotImplementedError
+        assert task in ("regression", "classification")
+        self.features  = torch.from_numpy(features.astype(np.float32))
+        self.labels    = (torch.from_numpy(labels.astype(np.float32))
+                          if labels is not None else None)
+        self.input_len = input_len
+        self.horizon   = horizon
+        self.task      = task
+        self.n_samples = len(features) - input_len - horizon + 1
 
     def __len__(self) -> int:
-        raise NotImplementedError
+        return self.n_samples
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        raise NotImplementedError
+        x_start = idx
+        x_end   = idx + self.input_len
+        y_start = x_end
+        y_end   = y_start + self.horizon
+
+        x = self.features[x_start:x_end]  # (input_len, N, d)
+
+        if self.task == "regression":
+            y = self.features[y_start:y_end]  # (horizon, N, d)
+        else:
+            # For classification use the label array; collapse vars by max (any extreme)
+            y = self.labels[y_start:y_end].max(dim=-1).values  # (horizon, N)
+
+        return x, y
 
 
 def build_dataloaders(
@@ -59,4 +75,19 @@ def build_dataloaders(
     num_workers: int = 0,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """Return (train_loader, val_loader, test_loader)."""
-    raise NotImplementedError
+    def _make(feats, labs, shuffle):
+        ds = STGNNDataset(feats, labs, input_len, horizon, task)
+        return DataLoader(
+            ds,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=num_workers,
+            pin_memory=True,
+            drop_last=shuffle,  # drop incomplete last batch only during training
+        )
+
+    return (
+        _make(train_features, train_labels, shuffle=True),
+        _make(val_features,   val_labels,   shuffle=False),
+        _make(test_features,  test_labels,  shuffle=False),
+    )

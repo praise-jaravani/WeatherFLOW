@@ -1,0 +1,29 @@
+# Files excluded from the Singularity/Apptainer container build context.
+# Data lives on HPC cluster storage and is mounted at job runtime — not bundled.
+
+data/era5/raw/
+data/saws/raw/
+
+# Generated outputs — not needed in container
+outputs/
+preprocessing/cache/
+tracking/
+
+# Container itself (avoid recursive inclusion)
+container.sif
+
+# Dev environment — not needed in container
+.venv/
+.conda/
+env/
+.conda-env.stamp
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# IDE
+.vscode/
+.idea/

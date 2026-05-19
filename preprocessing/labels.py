@@ -1,60 +1,67 @@
 """
-Binary extreme event labelling.
+Binary extreme event labelling for Phase 2 classification.
 
-Computes the 95th-percentile threshold for each variable at each station using
-the TRAINING partition only, then applies it across all three splits to produce
-binary labels (1 = extreme, 0 = non-extreme).
+95th-percentile thresholds are computed from the TRAINING partition only and
+applied across all three splits. Must be called after split.py.
 
-Must be called after split.py so training-only statistics can be computed
-without leaking future distributional information into the threshold.
-
-Thresholds are saved to the .npz cache so they can be inspected and reused
-without re-running the pipeline.
+Thresholds are saved alongside data tensors in the .npz cache so they can be
+inspected and reused without re-running the pipeline.
 """
 
 import numpy as np
-from typing import Tuple, Dict
+from typing import Tuple
 
 
 def compute_thresholds(
-    train_data: np.ndarray, percentile: float = 95.0
+    train_data: np.ndarray,
+    percentile: float = 95.0,
 ) -> np.ndarray:
     """
-    Compute per-variable, per-station extreme event threshold from training data.
+    Compute per-variable, per-node extreme-event threshold from training data.
 
     Args:
-        train_data: array of shape (T_train, N, d).
-        percentile: percentile defining 'extreme' (default 95).
+        train_data: (T_train, N, d) array.
+        percentile: percentile defining "extreme" (default 95).
 
     Returns:
-        threshold array of shape (N, d) — one threshold per station per variable.
+        thresholds: (N, d) array — one value per node per variable.
     """
-    raise NotImplementedError
+    return np.percentile(train_data, percentile, axis=0).astype(np.float32)
 
 
 def apply_labels(
-    data: np.ndarray, thresholds: np.ndarray
+    data: np.ndarray,
+    thresholds: np.ndarray,
 ) -> np.ndarray:
     """
-    Produce binary extreme event labels by comparing data against thresholds.
+    Produce binary extreme-event labels: 1 where data > threshold, else 0.
 
     Args:
-        data: array of shape (T, N, d).
-        thresholds: array of shape (N, d) computed from training data only.
+        data:       (T, N, d) array.
+        thresholds: (N, d) array computed from training data.
 
     Returns:
-        Binary label array of shape (T, N, d), dtype int8.
+        labels: (T, N, d) int8 array.
     """
-    raise NotImplementedError
+    return (data > thresholds[None, :, :]).astype(np.int8)
 
 
 def label_all_splits(
-    train: np.ndarray, val: np.ndarray, test: np.ndarray, percentile: float = 95.0
+    train: np.ndarray,
+    val: np.ndarray,
+    test: np.ndarray,
+    percentile: float = 95.0,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Convenience wrapper: compute thresholds on train, apply to all three splits.
+    Compute thresholds on train, apply to all three splits.
 
     Returns:
         (train_labels, val_labels, test_labels, thresholds)
     """
-    raise NotImplementedError
+    thresholds = compute_thresholds(train, percentile)
+    return (
+        apply_labels(train, thresholds),
+        apply_labels(val,   thresholds),
+        apply_labels(test,  thresholds),
+        thresholds,
+    )

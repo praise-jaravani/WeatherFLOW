@@ -32,6 +32,9 @@ build/
 .venv/
 env/
 
+# Make sentinel file — local only, not shared
+.conda-env.stamp
+
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb
