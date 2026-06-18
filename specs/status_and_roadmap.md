@@ -11,8 +11,9 @@
 |---|---|---|
 | Phase 0 | Framework scaffold + shared infrastructure | **Complete** |
 | Phase 1 | Data pipeline fixes + 2000–2026 ERA5 dataset | **Complete (download running)** |
+| HPC deployment | Container on cluster, repo cloned, GPU smoke test passed | **Complete** |
 | Phase 2 | Classification head — fix `(B,H,N,d)` → `(B,H,N)` shape | **Not started — spec ready** |
-| Phase 3 | Full experimental runs on HPC (all 8 models × 10 seeds) | **Blocked — awaiting data + teammate adapters** |
+| Phase 3 | Full experimental runs on HPC (4 models × 2 tasks × 10 seeds) | **Blocked — awaiting data** |
 
 ---
 
@@ -22,11 +23,25 @@
 
 | Metric | Value |
 |---|---|
-| Files on disk | 67 / 317 |
+| Files on disk | 71 / 317 |
 | Coverage on disk | 2000-01, then 2010-01 → 2015-06 |
-| Files remaining | 250 (2000-02 → 2009-12 backfill + 2015-07 → ~2026-05 continuation) |
-| Est. wall time remaining | 12–21 hours at 3–5 min/file |
-| Download process | PID 39330, running in background |
+| Files remaining | 246 (2000-02 → 2009-12 backfill + 2015-07 → ~2026-05 continuation) |
+| Est. wall time remaining | **~16 hours** (range: 12–21 h at 3–5 min/file; up to 40 h if CDS queue congested) |
+| Download process | Running in background — check with `ps aux \| grep download_era5` |
+
+### Download time breakdown
+
+246 files remain as of 18 June 2026 ~14:00 SAST:
+- **2000-02 → 2009-12**: 119 files (2000 backfill)
+- **2010-01 → 2015-06**: already on disk — skipped automatically
+- **2015-07 → 2026-05**: 127 files (continuation)
+
+At the typical CDS rate of **~4 min/file** (1–2 min queue + ~30 s download):
+- Best case (3 min/file): ~12 hours → **~02:00 SAST 19 June**
+- Expected (4 min/file): ~16 hours → **~06:00 SAST 19 June**
+- Slow CDS queue (5 min/file): ~21 hours → **~11:00 SAST 19 June**
+
+The script is resumable — if interrupted, `python3 scripts/download_era5.py` picks up exactly where it left off.
 
 ### How to check progress
 
@@ -177,46 +192,119 @@ ValueError: Target size ([512, 12, 10]) must be the same as input size ([512, 12
 
 ## Phase 3: Full experimental runs — BLOCKED
 
-### Pre-conditions (all must be green before running full experiments)
+### Experimental design
 
-- [ ] ERA5: all 317 months on disk and cache rebuilt
-- [ ] Phase 2 classification head wired and smoke-tested
-- [ ] STLGRU adapter (Zoleka)
-- [ ] Lite-STGNN adapter (Zoleka)
-- [ ] DiffSTG adapter (Génevieve)
-- [ ] USTD adapter (Génevieve)
-- [ ] Per-variable denormalised metrics wired into `training/trainer.py` (see below)
-- [ ] MAPE replaced with sMAPE or dropped (see below)
+The purpose of baselines is to give each continuous-time model a reference point. The comparison structure is therefore:
+
+| Comparison | Models involved | Purpose |
+|---|---|---|
+| A | MTGODE vs AGCRN | Does MTGODE beat the recurrent baseline? |
+| A | MTGODE vs CLCRN | Does MTGODE beat the graph-conv baseline? |
+| B | ClimODE vs AGCRN | Does ClimODE beat the recurrent baseline? |
+| B | ClimODE vs CLCRN | Does ClimODE beat the graph-conv baseline? |
+
+**Not compared directly:**
+- AGCRN vs CLCRN — pointless; both are baselines, they don't measure anything about our models
+- MTGODE vs ClimODE — also not a direct comparison; their relative standing is read off indirectly from how each performs against the same baselines
+
+This yields **4 model runs** (AGCRN, CLCRN, MTGODE, ClimODE), each × 10 seeds × 2 tasks = 80 total training runs for Praise's scope. When teammates finish their adapters, extend the same pattern: each new model is compared against AGCRN + CLCRN (not against other new models).
+
+Statistical comparison uses **Wilcoxon signed-rank test** on the 10 per-seed MAE values — paired, non-parametric. `evaluation/stats.py` is already implemented.
+
+### Pre-conditions (all must be green before submitting production jobs)
+
+- [ ] ERA5: all 317 months on disk and cache rebuilt on HPC
+- [ ] Phase 2 classification head wired and smoke-tested (regression runs are unblocked now; classification is blocked)
+- [ ] Timing run completed for MTGODE and ClimODE (decides single vs array job)
+- [ ] Per-variable denormalised metrics wired into `training/trainer.py`
 - [ ] ClimODE audit vs Verma et al. completed
 
-### What to run on HPC
+### HPC run sequence
 
+**Step 1 — Sync ERA5 data to HPC** (after download completes locally):
 ```bash
-# Full regression matrix — all 8 models × 10 seeds
-for model in agcrn clcrn mtgode climode stlgru litestgnn diffstg ustd; do
-  python3 cli.py --model $model --dataset era5 --task regression --runs 10
-done
-
-# Full classification matrix
-for model in agcrn clcrn mtgode climode stlgru litestgnn diffstg ustd; do
-  python3 cli.py --model $model --dataset era5 --task classification --runs 10
-done
-
-# Cross-model comparison
-python3 compare_results.py --results-dir results/ --task regression
-python3 compare_results.py --results-dir results/ --task classification
+# Rsync all 317 months to HPC WeatherFLOW data dir
+rsync -avP -e "ssh -i ~/.ssh/id_ed25519" \
+  data/era5/raw/ \
+  jrvpra001@hpc.uct.ac.za:/scratch/jrvpra001/weatherflow/WeatherFLOW/data/era5/raw/
 ```
 
-### Full-node timing check (before committing to full matrix)
-
-Run MTGODE and ClimODE at 999 nodes on HPC before the full experimental matrix to confirm they don't OOM or run too slowly:
-
+**Step 2 — Cache rebuild on HPC** (run once after all 317 files land on HPC):
 ```bash
-python3 cli.py --model mtgode --dataset era5 --task regression \
-  --runs 1 --config.training.epochs 1
-python3 cli.py --model climode --dataset era5 --task regression \
-  --runs 1 --config.training.epochs 1
+# Interactive CPU session (preprocessing is CPU-only)
+sintx --account=compsci --partition=ada --ntasks=4 --time=02:00:00
+cd /scratch/jrvpra001/weatherflow/WeatherFLOW
+SIF=/scratch/jrvpra001/weatherflow/container.sif
+singularity exec --bind $(pwd):/weatherflow "$SIF" \
+  python cli.py --model agcrn --dataset era5 --task regression \
+  --runs 1 --max-nodes 10 --no-cache
+# Verify: confirm "status: ok, n_cached == n_on_disk == 317" in output
 ```
+
+**Step 3 — Timing run** (1 epoch, full 999 nodes):
+```bash
+sbatch --export=MODEL=mtgode  scripts/jobs/timing_run.sh
+sbatch --export=MODEL=climode scripts/jobs/timing_run.sh
+# Divide 24h wall time by per-epoch time → max seeds per job
+# If >10 seeds fit in 24h: use train_single.sh (RUNS=10)
+# If not: use train_array.sh (one seed per task, seeds 42-51)
+```
+
+**Step 4 — Production regression runs** (4 models × 10 seeds):
+```bash
+# Baselines
+sbatch --export=MODEL=agcrn,TASK=regression,RUNS=10  scripts/jobs/train_single.sh
+sbatch --export=MODEL=clcrn,TASK=regression,RUNS=10  scripts/jobs/train_single.sh
+
+# Continuous-time models (use train_array.sh if timing run says needed)
+sbatch --export=MODEL=mtgode,TASK=regression,RUNS=10  scripts/jobs/train_single.sh
+sbatch --export=MODEL=climode,TASK=regression,RUNS=10 scripts/jobs/train_single.sh
+```
+
+**Step 5 — Production classification runs** (after Phase 2 head is wired):
+```bash
+sbatch --export=MODEL=agcrn,TASK=classification,RUNS=10  scripts/jobs/train_single.sh
+sbatch --export=MODEL=clcrn,TASK=classification,RUNS=10  scripts/jobs/train_single.sh
+sbatch --export=MODEL=mtgode,TASK=classification,RUNS=10  scripts/jobs/train_single.sh
+sbatch --export=MODEL=climode,TASK=classification,RUNS=10 scripts/jobs/train_single.sh
+```
+
+**Step 6 — Statistical comparison + plots** (CPU job, after all seeds complete):
+```bash
+sbatch --account=compsci --partition=ada --wrap="
+  singularity exec --bind $(pwd):/weatherflow $SIF \
+  python compare_results.py --results-dir outputs/ --task regression --wilcoxon --plot
+"
+```
+
+**Step 7 — Pull results back locally**:
+```bash
+rsync -avP jrvpra001@hpc.uct.ac.za:/scratch/jrvpra001/weatherflow/WeatherFLOW/outputs/ ./results/
+```
+
+---
+
+## HPC deployment — COMPLETE (18 June 2026)
+
+All setup steps confirmed working. Production jobs can be submitted as soon as the ERA5 download completes.
+
+| Item | Status |
+|---|---|
+| VPN + WSL2 mirrored networking (`~/.wslconfig`) | Done — `ssh hpc` works passwordlessly |
+| `/scratch/jrvpra001/weatherflow/{logs,cache,outputs}` | Created |
+| `container.sif` (11 GB) on scratch | Done |
+| Repo cloned with all 8 submodules | `/scratch/jrvpra001/weatherflow/WeatherFLOW` |
+| GPU smoke test (job 939227, srvrocgpu013) | **Passed** — L40S 46 GB, CUDA ✓, AGCRN pipeline ✓ |
+| SLURM job scripts | `scripts/jobs/{smoke_test,train_single,train_array,timing_run}.sh` |
+| Bind-mount strategy | `--bind WeatherFLOW:/weatherflow` — code updates via `git pull`, no container rebuild needed |
+
+**VPN note:** UCT HPC requires the VPN when off-campus. Run Cisco Secure Client (from `vpn.uct.ac.za`) on Windows before SSHing. WSL2 requires `networkingMode=mirrored` in `C:\Users\jarav\.wslconfig` — already set.
+
+**Updating code on HPC:**
+```bash
+ssh hpc "cd /scratch/jrvpra001/weatherflow/WeatherFLOW && git pull origin main"
+```
+No container rebuild needed unless new pip packages are added to `requirements.txt`.
 
 ---
 
@@ -224,10 +312,12 @@ python3 cli.py --model climode --dataset era5 --task regression \
 
 ### High priority — needed before any HPC experimental runs
 
-- [ ] **ERA5 download complete** — 250 files remaining; `python3 scripts/download_era5.py` resumes automatically
-- [ ] **Phase 2: classification head** — shape mismatch unblocks `--task classification` for all models
-- [ ] **Per-variable denormalised metrics** — add `compute_per_variable` to `evaluation/regression.py`; pass `mean`/`std` into `Trainer`; call `denormalise()` before reporting. Without this, all published MAE/RMSE values are in z-score units and cannot be compared against Gaibie (2024).
-- [ ] **MAPE fix** — `eps=1e-8` in `evaluation/regression.py:43` causes blowup on z-scored data. Switch to sMAPE or drop MAPE; primary metrics remain MAE and RMSE.
+- [ ] **ERA5 download complete** — 246 files remaining; expected ~06:00 SAST 19 June. `python3 scripts/download_era5.py` resumes automatically if interrupted.
+- [ ] **ERA5 sync to HPC** — after download completes locally, rsync to `/scratch/jrvpra001/weatherflow/WeatherFLOW/data/era5/raw/`
+- [ ] **Cache rebuild on HPC** — run `cli.py --no-cache` once after all 317 months arrive on HPC
+- [ ] **Timing run** — 1 epoch at 999 nodes for MTGODE and ClimODE before committing to full matrix
+- [ ] **Phase 2: classification head** — shape mismatch blocks `--task classification`; regression runs are unblocked now
+- [ ] **Per-variable denormalised metrics** — `training/trainer.py` must pass `mean`/`std` into `compute_all()`; currently MAE/RMSE are z-score units, not comparable to Gaibie (2024)
 - [ ] **STLGRU adapter** (Zoleka) — stub at `models/lightweight/STLGRU/`
 - [ ] **Lite-STGNN adapter** (Zoleka) — stub at `models/lightweight/Lite-STGNN/`
 - [ ] **DiffSTG adapter** (Génevieve) — stub at `models/diffusion/DiffSTG/`
@@ -279,7 +369,7 @@ All values are in **z-score units** — not comparable to Gaibie (2024) until pe
 
 ## Known issues with current metrics
 
-**MAPE is unreliable.** After z-score normalisation, targets are centred at 0. The `eps=1e-8` in `evaluation/regression.py:43` means any near-zero target causes a MAPE ratio blowup. Smoke-test MAPE values of 45–70 reflect this artifact, not actual prediction quality. Fix: switch to sMAPE or remove MAPE.
+**MAPE replaced with sMAPE.** ~~MAPE with `eps=1e-8` caused blowup on z-scored data.~~ `evaluation/regression.py` now uses symmetric MAPE (`smape`), which is bounded even when targets ≈ 0. This is fixed as of commit `d73b14e`.
 
 **MAE/RMSE are in z-score units.** All published training metrics are normalised. Per-variable denormalised values (Kelvin, %, m/s, Pa) are needed for comparison with Gaibie (2024). `preprocessing/normalise.py:denormalise()` is already implemented; it just needs to be called from `training/trainer.py`.
 
@@ -288,6 +378,8 @@ All values are in **z-score units** — not comparable to Gaibie (2024) until pe
 ---
 
 ## Key commands reference
+
+### Local (WSL2)
 
 ```bash
 # Resume ERA5 download (safe to re-run; skips existing files)
@@ -299,9 +391,6 @@ ls data/era5/raw/era5_southafrica_*.nc | wc -l
 # Run full test suite
 pytest tests/ -x -q
 
-# Run slow (ODE) tests
-pytest tests/ -m slow -q
-
 # Smoke test — 3 epochs, 10 nodes, regression
 python3 cli.py --model agcrn --dataset era5 --task regression \
   --runs 1 --max-nodes 10 --config.training.epochs 3
@@ -309,8 +398,40 @@ python3 cli.py --model agcrn --dataset era5 --task regression \
 # Force cache rebuild (after download completes)
 python3 cli.py --model agcrn --dataset era5 --task regression \
   --runs 1 --max-nodes 10 --no-cache
+```
 
-# Classification smoke (after Phase 2 is wired)
-python3 cli.py --model mtgode --dataset era5 --task classification \
-  --runs 1 --max-nodes 10 --config.training.epochs 3
+### HPC
+
+```bash
+# SSH (VPN required off-campus)
+ssh hpc                          # alias: jrvpra001@hpc.uct.ac.za
+
+# Pull latest code
+ssh hpc "cd /scratch/jrvpra001/weatherflow/WeatherFLOW && git pull origin main"
+
+# Submit smoke test
+ssh hpc "cd /scratch/jrvpra001/weatherflow/WeatherFLOW && sbatch scripts/jobs/smoke_test.sh"
+
+# Submit timing run (before full matrix)
+ssh hpc "cd /scratch/jrvpra001/weatherflow/WeatherFLOW && \
+  sbatch --export=MODEL=mtgode  scripts/jobs/timing_run.sh && \
+  sbatch --export=MODEL=climode scripts/jobs/timing_run.sh"
+
+# Submit production regression run (one model)
+ssh hpc "cd /scratch/jrvpra001/weatherflow/WeatherFLOW && \
+  sbatch --export=MODEL=agcrn,TASK=regression,RUNS=10 scripts/jobs/train_single.sh"
+
+# Check queue
+ssh hpc "squeue -u jrvpra001"
+
+# Watch job log
+ssh hpc "tail -f /scratch/jrvpra001/weatherflow/logs/smoke-<JOBID>.out"
+
+# Rsync ERA5 data to HPC (run after local download completes)
+rsync -avP -e "ssh -i ~/.ssh/id_ed25519" \
+  data/era5/raw/ \
+  jrvpra001@hpc.uct.ac.za:/scratch/jrvpra001/weatherflow/WeatherFLOW/data/era5/raw/
+
+# Pull results back locally
+rsync -avP jrvpra001@hpc.uct.ac.za:/scratch/jrvpra001/weatherflow/WeatherFLOW/outputs/ ./results/
 ```
