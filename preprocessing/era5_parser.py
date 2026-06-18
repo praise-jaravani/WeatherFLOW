@@ -6,14 +6,18 @@ inner NetCDF4 files:
   - data_stream-oper_stepType-instant.nc  → t2m, d2m, u10, v10, sp
   - data_stream-oper_stepType-accum.nc   → tp
 
-This module handles both grid-native mode (all ERA5 grid points become nodes)
-and station-interpolated mode (bilinear interpolation to provided lat/lon points).
+Parsing strategy: each monthly file is opened individually, its numpy chunk
+extracted, and the xarray Dataset freed before moving to the next month.
+This bounds peak memory to roughly one month of xarray (~50 MB) plus the
+growing numpy accumulator, rather than loading all months as a single
+concatenated xarray object (~300 MB+ per 10 months, OOM at 100+ months).
 
 Grid-native output at 0.25° resolution: 53 lat × 73 lon = 3,869 nodes.
 Use lat_stride/lon_stride to subsample (stride=2 → 999 nodes at ~0.5°).
 """
 
 import io
+import logging
 import os
 import tempfile
 import zipfile
@@ -23,6 +27,8 @@ from typing import List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import xarray as xr
+
+log = logging.getLogger(__name__)
 
 VARIABLE_RENAMES = {
     "t2m": "t2m",
@@ -78,14 +84,30 @@ def _open_zipped_nc(path: Path) -> xr.Dataset:
     return merged
 
 
-def _load_all_months(directory: Path) -> xr.Dataset:
-    """Concatenate all monthly ERA5 files in `directory` into one Dataset."""
-    files = sorted(directory.glob("era5_southafrica_*.nc"))
-    if not files:
-        raise FileNotFoundError(f"No ERA5 files found in {directory}")
-    datasets = [_open_zipped_nc(f) for f in files]
-    combined = xr.concat(datasets, dim="valid_time")
-    return combined.sortby("valid_time")
+def _parse_one_month(
+    path: Path,
+    lat_indices: List[int],
+    lon_indices: List[int],
+    var_names: List[str],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Open one ZIP-wrapped monthly file, extract a numpy chunk, free xarray.
+
+    Uses integer index selection (isel) rather than coordinate-value selection
+    (sel) to avoid floating-point equality issues across files.
+
+    Returns:
+        chunk:      (T_month, N, d) float32
+        timestamps: (T_month,) datetime64[ns]
+    """
+    ds = _open_zipped_nc(path)
+    ds = ds.isel(latitude=lat_indices, longitude=lon_indices)
+    ds = ds.stack(node=("latitude", "longitude"))
+    chunk = np.stack([ds[v].values for v in var_names], axis=-1).astype(np.float32)
+    ts = ds.valid_time.values.copy()
+    ds.close()
+    del ds
+    return chunk, ts
 
 
 def parse_era5_grid(
@@ -95,6 +117,11 @@ def parse_era5_grid(
 ) -> Tuple[np.ndarray, np.ndarray, pd.DataFrame, List[str]]:
     """
     Parse ERA5 files using the native grid as the node set.
+
+    Parses one month at a time to keep peak memory bounded.  For 317 monthly
+    files at stride=2 (999 nodes, d=6), peak memory is ~50 MB xarray +
+    accumulating numpy list → final concatenated array of ~5.6 GB.  Run on
+    HPC for the full 2000–2026 dataset.
 
     Default stride of 2 subsamples the 0.25° grid to ~0.5°, giving
     27 × 37 = 999 nodes — a manageable size for all 8 STGNN models.
@@ -111,29 +138,43 @@ def parse_era5_grid(
         coords:     DataFrame with columns [node_id, lat, lon], length N.
         var_names:  list of d variable name strings (canonical order).
     """
-    ds = _load_all_months(Path(directory))
+    files = sorted(Path(directory).glob("era5_southafrica_*.nc"))
+    if not files:
+        raise FileNotFoundError(f"No ERA5 files found in {directory}")
 
-    lats = ds.latitude.values[::lat_stride]
-    lons = ds.longitude.values[::lon_stride]
-    ds = ds.sel(latitude=lats, longitude=lons)
-
-    # Stack spatial dims into a single node dimension
-    ds = ds.stack(node=("latitude", "longitude"))
-
-    var_names = [v for v in VARIABLE_NAMES if v in ds]
-    arrays = [ds[v].values for v in var_names]
-    X = np.stack(arrays, axis=-1).astype(np.float32)  # (T, N, d)
-
-    timestamps = ds.valid_time.values
-
-    node_index = ds.indexes["node"]
+    # Determine grid structure and variable list from the first file only.
+    log.info("  Determining grid from first file: %s", files[0].name)
+    ds0 = _open_zipped_nc(files[0])
+    lat_indices = list(range(0, len(ds0.latitude), lat_stride))
+    lon_indices = list(range(0, len(ds0.longitude), lon_stride))
+    ds_sub = ds0.isel(latitude=lat_indices, longitude=lon_indices)
+    ds_sub = ds_sub.stack(node=("latitude", "longitude"))
+    var_names = [v for v in VARIABLE_NAMES if v in ds0]
+    node_index = ds_sub.indexes["node"]
     coords = pd.DataFrame({
         "node_id": np.arange(len(node_index)),
         "lat":     [pt[0] for pt in node_index],
         "lon":     [pt[1] for pt in node_index],
     })
+    ds0.close()
+    del ds0, ds_sub
 
-    return X, timestamps, coords, var_names
+    # Parse each month independently: extract numpy chunk, free xarray.
+    chunks: List[np.ndarray] = []
+    ts_list: List[np.ndarray] = []
+    n = len(files)
+    for i, path in enumerate(files, 1):
+        log.info("  [%d/%d] Parsing %s", i, n, path.name)
+        chunk, ts = _parse_one_month(path, lat_indices, lon_indices, var_names)
+        chunks.append(chunk)
+        ts_list.append(ts)
+
+    X = np.concatenate(chunks, axis=0)
+    timestamps = np.concatenate(ts_list, axis=0)
+
+    # Sort by time (files should already be in order, but guard against gaps)
+    order = np.argsort(timestamps)
+    return X[order], timestamps[order], coords, var_names
 
 
 def parse_era5_stations(
@@ -142,6 +183,9 @@ def parse_era5_stations(
 ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
     """
     Parse ERA5 files with bilinear interpolation to station lat/lon points.
+
+    Parses one month at a time (same incremental strategy as parse_era5_grid)
+    to bound memory.
 
     Used when SAWS station coordinates are available so both datasets share
     the same N nodes, enabling direct comparison and data fusion.
@@ -155,27 +199,44 @@ def parse_era5_stations(
         timestamps: (T,) datetime64[ns] array.
         var_names:  list of d variable name strings.
     """
-    ds = _load_all_months(Path(directory))
+    files = sorted(Path(directory).glob("era5_southafrica_*.nc"))
+    if not files:
+        raise FileNotFoundError(f"No ERA5 files found in {directory}")
 
     n_stations = len(station_coords)
-    n_times = ds.dims["valid_time"]
-    var_names = [v for v in VARIABLE_NAMES if v in ds]
-    d = len(var_names)
+    var_names: Optional[List[str]] = None
+    chunks: List[np.ndarray] = []
+    ts_list: List[np.ndarray] = []
+    n = len(files)
 
-    X = np.empty((n_times, n_stations, d), dtype=np.float32)
+    for i, path in enumerate(files, 1):
+        log.info("  [%d/%d] Interpolating stations: %s", i, n, path.name)
+        ds = _open_zipped_nc(path)
 
-    for i, (_, row) in enumerate(station_coords.iterrows()):
-        target_lat, target_lon = float(row["lat"]), float(row["lon"])
-        interp = ds.interp(
-            latitude=target_lat,
-            longitude=target_lon,
-            method="linear",
-        )
-        for j, var in enumerate(var_names):
-            X[:, i, j] = interp[var].values.astype(np.float32)
+        if var_names is None:
+            var_names = [v for v in VARIABLE_NAMES if v in ds]
+        d = len(var_names)
+        n_times = ds.dims["valid_time"]
+        chunk = np.empty((n_times, n_stations, d), dtype=np.float32)
 
-    timestamps = ds.valid_time.values
-    return X, timestamps, var_names
+        for j, (_, row) in enumerate(station_coords.iterrows()):
+            interp = ds.interp(
+                latitude=float(row["lat"]),
+                longitude=float(row["lon"]),
+                method="linear",
+            )
+            for k, var in enumerate(var_names):
+                chunk[:, j, k] = interp[var].values.astype(np.float32)
+
+        ts_list.append(ds.valid_time.values.copy())
+        ds.close()
+        del ds
+        chunks.append(chunk)
+
+    X = np.concatenate(chunks, axis=0)
+    timestamps = np.concatenate(ts_list, axis=0)
+    order = np.argsort(timestamps)
+    return X[order], timestamps[order], var_names or []
 
 
 def parse_era5_files(

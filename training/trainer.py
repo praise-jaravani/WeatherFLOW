@@ -22,7 +22,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from torch.utils.data import DataLoader
 
 from rich.progress import (
@@ -56,7 +56,11 @@ class Trainer:
         output_dir: Path,
         seed: int,
         mlflow_enabled: bool = True,
-        extreme_mask: Optional[np.ndarray] = None,
+        norm_mean: Optional[np.ndarray] = None,
+        norm_std: Optional[np.ndarray] = None,
+        thresholds: Optional[np.ndarray] = None,
+        var_names: Optional[List[str]] = None,
+        vpt_epsilon: float = 0.3,
     ):
         """
         Args:
@@ -70,8 +74,11 @@ class Trainer:
             output_dir:     directory for this seed's checkpoint and logs.
             seed:           current random seed (used for display only).
             mlflow_enabled: if False, skip all mlflow.log_* calls.
-            extreme_mask:   optional (T, N, d) binary array for stratified regression
-                            metrics; T = len(test_set)*H. None skips stratified metrics.
+            norm_mean:      (1, N, d) train z-score means; used to denorm test metrics.
+            norm_std:       (1, N, d) train z-score stds; used to denorm test metrics.
+            thresholds:     (N, d) extreme-event thresholds in PHYSICAL units.
+            var_names:      list of d variable names (e.g. ERA5_VAR_NAMES).
+            vpt_epsilon:    NRMSE threshold for VPT (fraction of a std).
         """
         self.adapter = adapter
         self.train_loader = train_loader
@@ -82,7 +89,12 @@ class Trainer:
         self.output_dir = Path(output_dir)
         self.seed = seed
         self.mlflow_enabled = mlflow_enabled
-        self.extreme_mask = extreme_mask
+
+        self.norm_mean = norm_mean      # (1, N, d)
+        self.norm_std = norm_std        # (1, N, d)
+        self.thresholds = thresholds    # (N, d), PHYSICAL units
+        self.var_names = var_names
+        self.vpt_epsilon = vpt_epsilon
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.adj = adj.to(self.device)
@@ -102,7 +114,6 @@ class Trainer:
         self.scheduler = build_scheduler(self.optimiser, train_cfg)
 
         self.task = config.get("task", "regression")
-        self.vpt_epsilon = float(config.get("evaluation", {}).get("vpt_epsilon", 0.5))
 
         self.best_val_loss = float("inf")
         self.patience_counter = 0
@@ -235,7 +246,21 @@ class Trainer:
 
         return total_loss / max(n_batches, 1)
 
-    def _evaluate_test(self) -> Dict[str, float]:
+    def _build_extreme_mask(self, targets_norm: np.ndarray) -> Optional[np.ndarray]:
+        """targets_norm: (samples, H, N, d). Returns (samples, H, N, d) bool, or None."""
+        if self.thresholds is None or self.norm_mean is None or self.norm_std is None:
+            return None
+        m = self.norm_mean.reshape(1, 1, *self.norm_mean.shape[-2:])
+        s = self.norm_std.reshape(1, 1, *self.norm_std.shape[-2:])
+        targets_phys = targets_norm * s + m
+        return targets_phys > self.thresholds[None, None, :, :]
+
+    def _save_per_station(self, per_station: dict) -> None:
+        """Save (N, d) per-station arrays for Phase 3 geographic stratification."""
+        out_path = self.output_dir / "per_station.npz"
+        np.savez(str(out_path), **{k: v for k, v in per_station.items() if isinstance(v, np.ndarray)})
+
+    def _evaluate_test(self) -> Dict[str, Any]:
         """Load best checkpoint and evaluate on the test set."""
         if self.checkpoint_path.exists():
             state = torch.load(
@@ -255,9 +280,17 @@ class Trainer:
         targets = np.concatenate(all_targets, axis=0)
 
         if self.task == "regression":
+            mask = self._build_extreme_mask(targets)
             metrics = regression.compute_all(
-                preds, targets, self.extreme_mask, self.vpt_epsilon
+                preds, targets,
+                extreme_mask=mask,
+                vpt_epsilon=self.vpt_epsilon,
+                mean=self.norm_mean,
+                std=self.norm_std,
+                var_names=self.var_names,
             )
+            per_station = metrics.pop("per_station")
+            self._save_per_station(per_station)
         else:
             metrics = classification.compute_all(preds, targets)
 
@@ -267,13 +300,26 @@ class Trainer:
         )
         metrics.update(infer)
 
-        self._mlflow_log_metrics({f"test/{k}": v for k, v in metrics.items()})
+        self._mlflow_log_metrics(
+            {f"test/{k}": v for k, v in self._flatten_for_mlflow(metrics).items()}
+        )
 
         summary_path = self.output_dir / "test_metrics.json"
         with open(summary_path, "w") as f:
             json.dump(metrics, f, indent=2)
 
         return metrics
+
+    def _flatten_for_mlflow(self, metrics: dict, prefix: str = "") -> dict:
+        """Flatten nested dicts to dot-separated keys for MLflow. Scalars only."""
+        flat = {}
+        for k, v in metrics.items():
+            key = f"{prefix}.{k}" if prefix else k
+            if isinstance(v, (int, float)):
+                flat[key] = v
+            elif isinstance(v, dict):
+                flat.update(self._flatten_for_mlflow(v, prefix=key))
+        return flat
 
     def _save_checkpoint(self, val_loss: float) -> None:
         if val_loss < self.best_val_loss:

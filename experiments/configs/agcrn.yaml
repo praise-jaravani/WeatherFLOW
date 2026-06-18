@@ -1,17 +1,16 @@
 # AGCRN — Adaptive Graph Convolutional Recurrent Network
-# Baseline model. Hyperparameters follow Gaibie et al. (2024) unless noted.
-# TODO: confirm learning_rate, hidden_dim, num_layers with team once Gaibie et al. values are locked.
+# Baseline model. Hyperparameters from Gaibie et al. (2024) Table 1 (HPO optimal values).
 
 model:
   name: agcrn
-  hidden_dim: 64          # TODO: confirm from Gaibie et al. (2024)
-  num_layers: 2
+  hidden_dim: 64          # Gaibie et al. (2024): RNN units = 64
+  num_layers: 2           # Gaibie et al. (2024): num layers = 2
   embed_dim: 10            # node embedding dimension for adaptive graph
   cheb_k: 2               # Chebyshev polynomial order
 
 training:
-  learning_rate: 0.001    # TODO: confirm from Gaibie et al. (2024)
-  batch_size: 32
+  learning_rate: 0.01     # Gaibie et al. (2024): optimal lr = 0.01
+  batch_size: 64          # Gaibie et al. (2024): optimal batch size = 64
   epochs: 100
   early_stopping_patience: 15
   gradient_clip_max_norm: 5.0
@@ -22,8 +21,8 @@ training:
     eta_min: 1.0e-6
 
 data:
-  input_len: 12           # T: historical window — TODO: confirm with team (Open Question #1)
-  horizon: 12             # H: forecast horizon  — TODO: confirm with team (Open Question #1)
+  input_len: 12           # T: Gaibie et al. (2024) HPO optimal for AGCRN = 12h
+  horizon: 12             # H: within Gaibie et al. (2024) tested horizons (3/6/9/12/24h)
 
 evaluation:
-  vpt_epsilon: 0.5        # NRMSE threshold for VPT — TODO: confirm from Gaibie et al. (2024)
+  vpt_epsilon: 0.3        # NRMSE threshold for VPT (Platt et al. ~0.3; fraction of a std)

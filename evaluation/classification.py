@@ -99,6 +99,16 @@ def confusion_matrix_per_station(
     return result
 
 
+def accuracy_per_station(
+    preds: np.ndarray, targets: np.ndarray, threshold: float = 0.5
+) -> np.ndarray:
+    """
+    Accuracy per station: fraction of timesteps correctly classified. Shape: (N,).
+    """
+    binary_preds = (preds >= threshold).astype(int)
+    return (binary_preds == targets).mean(axis=0)
+
+
 def compute_all(
     preds: np.ndarray, targets: np.ndarray, threshold: float = 0.5
 ) -> Dict[str, float]:
@@ -118,8 +128,11 @@ def compute_all(
 
     prf = precision_recall_f1(preds, targets, threshold)
     auc = auc_roc(preds, targets)
+    acc = accuracy_per_station(preds, targets, threshold)
 
     return {
+        "accuracy":      float(acc.mean()),
+        "accuracy_std":  float(acc.std()),
         "precision":     float(prf["precision"].mean()),
         "precision_std": float(prf["precision"].std()),
         "recall":        float(prf["recall"].mean()),

@@ -23,6 +23,7 @@ Device note: MTGODE stores self.idx as a plain attribute (not a registered
 buffer), so it is not moved by .to(device). The wrapper fixes this in forward().
 """
 
+import importlib.util
 import sys
 import torch
 import torch.nn as nn
@@ -30,6 +31,12 @@ from pathlib import Path
 from typing import Dict, Any
 
 REPO_PATH = Path(__file__).parent / "MTGODE"
+
+# Namespaced key used when caching the upstream model.py in sys.modules.
+# AGCRN's sys.path injection also creates a bare 'model' entry in sys.modules
+# (it imports `from model.AGCRN import AGCRN`).  Using a project-scoped key
+# avoids the collision when both adapters are loaded in the same process.
+_MTGODE_MODULE_KEY = "_weatherflow_mtgode_upstream_model"
 
 
 class MTGODEModel(nn.Module):
@@ -46,10 +53,21 @@ class MTGODEModel(nn.Module):
         """
         super().__init__()
 
+        # Add REPO_PATH so that model.py's own `from layer import ...` resolves.
         if str(REPO_PATH) not in sys.path:
             sys.path.insert(0, str(REPO_PATH))
 
-        from model import MTGODE  # noqa: PLC0415
+        # Load model.py under a namespaced key to avoid clobbering the 'model'
+        # entry that AGCRN's adapter leaves in sys.modules.
+        if _MTGODE_MODULE_KEY not in sys.modules:
+            _spec = importlib.util.spec_from_file_location(
+                _MTGODE_MODULE_KEY, REPO_PATH / "model.py"
+            )
+            _mod = importlib.util.module_from_spec(_spec)
+            sys.modules[_MTGODE_MODULE_KEY] = _mod
+            _spec.loader.exec_module(_mod)
+
+        MTGODE = sys.modules[_MTGODE_MODULE_KEY].MTGODE
 
         model_cfg = config.get("model", config)
         ode_cfg   = config.get("ode", {})
@@ -103,8 +121,12 @@ class MTGODEModel(nn.Module):
         # MTGODE expects (B, d, N, T)
         x_mtg = x.permute(0, 3, 2, 1)   # (B, d, N, T)
 
-        # self.idx is a plain attribute, not a buffer — move it manually
+        # self.idx is a plain attribute, not a registered buffer — move manually.
+        # Also sync gc.device: graph_constructor creates its mask tensor using
+        # self.device (set to cpu at init), but t1 lives on the model's device
+        # after .to(device). Keeping them in sync avoids a scatter_ device mismatch.
         self.net.idx = self.net.idx.to(x.device)
+        self.net.gc.device = x.device
 
         out = self.net(x_mtg)             # (B, H*d, N, 1)
         out = out.squeeze(-1)             # (B, H*d, N)

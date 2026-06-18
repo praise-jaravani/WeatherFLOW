@@ -24,48 +24,68 @@ class TestRegressionMetrics:
         return preds, targets
 
     def test_mae_perfect_prediction(self):
-        from evaluation.regression import mae
-        x = np.ones((100, 10, 3), dtype=np.float32)
-        assert mae(x, x).shape == (10,)
-        np.testing.assert_allclose(mae(x, x), 0.0, atol=1e-6)
+        from evaluation.regression import per_station_var_mae
+        # (S, H, N, d): perfect prediction → all MAE == 0
+        x = np.ones((10, 2, 10, 3), dtype=np.float32)
+        result = per_station_var_mae(x, x)
+        assert result.shape == (10, 3)
+        np.testing.assert_allclose(result, 0.0, atol=1e-6)
 
     def test_mae_known_value(self):
-        from evaluation.regression import mae
-        preds   = np.zeros((10, 5, 2), dtype=np.float32)
-        targets = np.ones((10, 5, 2),  dtype=np.float32)
-        result  = mae(preds, targets)
-        assert result.shape == (5,)
+        from evaluation.regression import per_station_var_mae
+        # preds=0, targets=1 → MAE == 1 everywhere
+        preds   = np.zeros((10, 1, 5, 2), dtype=np.float32)
+        targets = np.ones((10, 1, 5, 2),  dtype=np.float32)
+        result  = per_station_var_mae(preds, targets)
+        assert result.shape == (5, 2)
         np.testing.assert_allclose(result, 1.0, atol=1e-6)
 
     def test_rmse_nonneg(self):
-        from evaluation.regression import rmse
+        from evaluation.regression import per_station_var_rmse
         p, t = self._make_preds()
-        vals = rmse(p.reshape(-1, *p.shape[2:]), t.reshape(-1, *t.shape[2:]))
+        vals = per_station_var_rmse(p, t)
+        assert vals.shape == (10, 3)
         assert (vals >= 0).all()
 
     def test_rmse_greater_than_mae(self):
         """RMSE >= MAE always (Jensen's inequality)."""
-        from evaluation.regression import mae, rmse
+        from evaluation.regression import per_station_var_mae, per_station_var_rmse
         p, t = self._make_preds()
-        pf, tf = p.reshape(-1, *p.shape[2:]), t.reshape(-1, *t.shape[2:])
-        assert (rmse(pf, tf) >= mae(pf, tf) - 1e-6).all()
+        assert (per_station_var_rmse(p, t) >= per_station_var_mae(p, t) - 1e-6).all()
 
     def test_mse_eq_rmse_squared(self):
-        from evaluation.regression import mse, rmse
+        from evaluation.regression import per_station_var_mse, per_station_var_rmse
         p, t = self._make_preds()
-        pf, tf = p.reshape(-1, *p.shape[2:]), t.reshape(-1, *t.shape[2:])
-        np.testing.assert_allclose(mse(pf, tf), rmse(pf, tf) ** 2, rtol=1e-4)
+        np.testing.assert_allclose(
+            per_station_var_mse(p, t), per_station_var_rmse(p, t) ** 2, rtol=1e-4
+        )
+
+    def test_smape_bounded(self):
+        """sMAPE must be in [0, 2]."""
+        from evaluation.regression import per_station_var_smape
+        p, t = self._make_preds()
+        vals = per_station_var_smape(p, t)
+        assert (vals >= 0).all()
+        assert (vals <= 2.0 + 1e-6).all()
 
     def test_nrmse_curve_shape(self):
         from evaluation.regression import nrmse_per_horizon
         p, t = self._make_preds(S=20, H=4, N=10, d=3)
         curve = nrmse_per_horizon(p, t)
-        assert curve.shape == (4,)
+        # New: returns (H, d), not (H,)
+        assert curve.shape == (4, 3)
 
-    def test_vpt_returns_correct_horizon(self):
+    def test_vpt_first_crossing(self):
+        """First-crossing VPT: returns index of first step that hits/exceeds epsilon."""
+        from evaluation.regression import valid_prediction_time
+        curve = np.array([0.1, 0.2, 0.6, 0.4])   # first crossing at index 2
+        assert valid_prediction_time(curve, epsilon=0.5) == 2
+
+    def test_vpt_all_below_epsilon(self):
+        """If curve never reaches epsilon, VPT == len(curve) (all H steps valid)."""
         from evaluation.regression import valid_prediction_time
         curve = np.array([0.1, 0.2, 0.3, 0.4])
-        assert valid_prediction_time(curve, epsilon=0.5) == 3
+        assert valid_prediction_time(curve, epsilon=0.5) == 4
 
     def test_vpt_zero_when_always_above_epsilon(self):
         from evaluation.regression import valid_prediction_time
@@ -76,28 +96,89 @@ class TestRegressionMetrics:
         from evaluation.regression import compute_all
         p, t = self._make_preds()
         result = compute_all(p, t, extreme_mask=None, vpt_epsilon=0.5)
-        for key in ["mae", "rmse", "mse", "mape", "vpt", "nrmse_per_horizon"]:
+        for key in ["mae", "rmse", "mse", "smape", "vpt", "nrmse_per_horizon", "mae_pooled_norm"]:
             assert key in result, f"Missing key: {key}"
+        assert "mape" not in result, "mape should be gone (replaced by smape)"
 
-    def test_compute_all_nrmse_list(self):
+    def test_compute_all_returns_per_variable_dicts(self):
+        """mae, rmse, vpt etc. are dicts keyed by variable name."""
+        from evaluation.regression import compute_all
+        p, t = self._make_preds(d=3)
+        result = compute_all(p, t, extreme_mask=None, vpt_epsilon=0.5,
+                             var_names=["a", "b", "c"])
+        assert isinstance(result["mae"], dict)
+        assert set(result["mae"].keys()) == {"a", "b", "c"}
+        assert isinstance(result["vpt"], dict)
+
+    def test_compute_all_nrmse_per_var(self):
+        """nrmse_per_horizon is a dict of per-variable H-length lists."""
+        from evaluation.regression import compute_all
+        p, t = self._make_preds(H=4, d=3)
+        result = compute_all(p, t, extreme_mask=None, vpt_epsilon=0.5,
+                             var_names=["a", "b", "c"])
+        nph = result["nrmse_per_horizon"]
+        assert isinstance(nph, dict)
+        assert set(nph.keys()) == {"a", "b", "c"}
+        assert len(nph["a"]) == 4  # H=4
+
+    def test_compute_all_extreme_buckets_nan_when_no_mask(self):
+        """Without an extreme_mask all extreme/peak fields should be NaN, not 0."""
         from evaluation.regression import compute_all
         p, t = self._make_preds()
         result = compute_all(p, t, extreme_mask=None, vpt_epsilon=0.5)
-        assert isinstance(result["nrmse_per_horizon"], list)
-        assert len(result["nrmse_per_horizon"]) == 4  # H=4
+        for key in ["mae_extreme", "mae_nonextreme", "peak_intensity_error"]:
+            for v_val in result[key].values():
+                assert np.isnan(v_val), f"{key} should be NaN without a mask, got {v_val}"
 
-    def test_stratified_mae_splits_correctly(self):
-        from evaluation.regression import stratified_mae
+    def test_compute_all_extreme_buckets_nonzero_with_mask(self):
+        """With a mask that covers some samples, stratified metrics must be non-NaN."""
+        from evaluation.regression import compute_all
+        S, H, N, d = 20, 4, 10, 3
+        rng = np.random.default_rng(7)
+        p = rng.standard_normal((S, H, N, d)).astype(np.float32)
+        t = rng.standard_normal((S, H, N, d)).astype(np.float32)
+        mask = rng.integers(0, 2, (S, H, N, d)).astype(bool)
+        # force at least one True per station/var so no NaN
+        mask[:, 0, :, :] = True
+        result = compute_all(p, t, extreme_mask=mask, vpt_epsilon=0.5)
+        for v_val in result["mae_extreme"].values():
+            assert not np.isnan(v_val), "mae_extreme should be non-NaN when mask has coverage"
+
+    def test_compute_all_units_physical_when_stats_given(self):
+        """units field is 'physical' when mean/std are supplied."""
+        from evaluation.regression import compute_all
+        S, H, N, d = 5, 2, 4, 2
+        rng = np.random.default_rng(0)
+        p = rng.standard_normal((S, H, N, d)).astype(np.float32)
+        t = rng.standard_normal((S, H, N, d)).astype(np.float32)
+        mean = np.zeros((1, N, d), dtype=np.float32)
+        std  = np.ones((1, N, d), dtype=np.float32)
+        result = compute_all(p, t, mean=mean, std=std, var_names=["x", "y"])
+        assert result["units"] == "physical"
+
+    def test_compute_all_units_normalised_without_stats(self):
+        from evaluation.regression import compute_all
+        p, t = self._make_preds()
+        result = compute_all(p, t)
+        assert result["units"] == "normalised"
+
+    def test_stratified_var_mae_splits_correctly(self):
+        """stratified_var_mae returns (N, d) arrays; NaN only where bucket is empty."""
+        from evaluation.regression import stratified_var_mae
         rng = np.random.default_rng(1)
-        T, N, d = 80, 10, 3
-        preds   = rng.standard_normal((T, N, d)).astype(np.float32)
-        targets = rng.standard_normal((T, N, d)).astype(np.float32)
-        mask    = rng.integers(0, 2, (T, N, d)).astype(bool)
-        mae_ext, mae_non = stratified_mae(preds, targets, mask)
-        assert mae_ext.shape == (N,)
-        assert mae_non.shape == (N,)
-        assert (mae_ext >= 0).all()
-        assert (mae_non >= 0).all()
+        S, H, N, d = 20, 4, 10, 3
+        preds   = rng.standard_normal((S, H, N, d)).astype(np.float32)
+        targets = rng.standard_normal((S, H, N, d)).astype(np.float32)
+        mask    = rng.integers(0, 2, (S, H, N, d)).astype(bool)
+        # force at least one extreme per cell to avoid all-NaN
+        mask[0, 0, :, :] = True
+        mae_ext, mae_non = stratified_var_mae(preds, targets, mask)
+        assert mae_ext.shape == (N, d)
+        assert mae_non.shape == (N, d)
+        valid_ext = mae_ext[~np.isnan(mae_ext)]
+        valid_non = mae_non[~np.isnan(mae_non)]
+        assert (valid_ext >= 0).all()
+        assert (valid_non >= 0).all()
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +267,19 @@ class TestComputationalMetrics:
         assert "params_M" in result
         assert "flops_G"  in result
         assert result["params_M"] > 0
-        assert result["flops_G"]  >= 0  # FLOPs can be 0 if torchinfo fails
+        # flops_G is either None (untraceable) or a positive float — never 0.0
+        assert result["flops_G"] is None or result["flops_G"] > 0
+
+    def test_count_flops_none_on_failure(self):
+        """A model that raises during tracing should return None, not 0.0."""
+        from evaluation.computational import count_flops
+
+        class _BadModel(nn.Module):
+            def forward(self, x):
+                raise RuntimeError("untraceable")
+
+        result = count_flops(_BadModel(), torch.randn(2, 4))
+        assert result is None
 
     def test_inference_time_positive(self):
         from evaluation.computational import measure_inference_time

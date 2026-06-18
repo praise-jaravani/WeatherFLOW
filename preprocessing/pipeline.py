@@ -1,5 +1,5 @@
 """
-Orchestrates the full preprocessing sequence with hash-based cache invalidation.
+Orchestrates the full preprocessing sequence with manifest-based cache invalidation.
 
 Pipeline order (leakage-safe):
   1. Parse     — era5_parser / saws_parser → (T, N, d) array + coords
@@ -10,10 +10,13 @@ Pipeline order (leakage-safe):
   6. Graph     — adjacency matrix from node lat/lon coordinates
   7. DataLoaders — sliding-window Dataset + DataLoader factory
 
-Hash check: SHA-256 fingerprint of raw file mtimes + preprocessing config.
-On a match, cached .npy files are loaded directly. On a miss (or --no-cache),
-the pipeline runs, results are saved to preprocessing/cache/, and the hash
-file is updated.
+Hash check: SHA-256 of the set of month identifiers (filename stems) on disk plus
+preprocessing config keys.  Crucially this is *NOT* mtime-based — re-touching or
+re-downloading a file without changing the set of months does not invalidate the cache.
+Only adding new monthly files (or changing a config key) triggers a rebuild.
+
+Use verify_cache_coverage(dataset) at any time to check whether the cache covers
+all months currently on disk without rebuilding.
 """
 
 import hashlib
@@ -21,11 +24,12 @@ import json
 import logging
 import numpy as np
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 from torch.utils.data import DataLoader
 
 from preprocessing.era5_parser  import parse_era5_files
+from preprocessing.derive        import derive_era5_variables
 from preprocessing.impute        import exclude_sparse_nodes, idw_impute
 from preprocessing.split         import chronological_split
 from preprocessing.labels        import label_all_splits
@@ -43,27 +47,60 @@ SAWS_RAW_DIR = Path(__file__).parent.parent / "data" / "saws" / "raw"
 
 
 # ---------------------------------------------------------------------------
+# Manifest helpers
+# ---------------------------------------------------------------------------
+
+def _manifest_fingerprint(directory: Path, pattern: str) -> List[str]:
+    """
+    Return sorted filename stems for all matching files.
+
+    Stable across mtime and size changes — a resumed download or a filesystem
+    re-touch does NOT change this value.  Only adding or removing files does.
+    """
+    return sorted(f.stem for f in directory.glob(pattern) if f.is_file())
+
+
+def _era5_month_list(directory: Path) -> List[Tuple[int, int]]:
+    """
+    Return sorted [(year, month), ...] for ERA5 monthly .nc files.
+
+    Used to populate meta.json so the cache's temporal coverage is always
+    human-readable without re-parsing.
+    """
+    months = []
+    for f in sorted(directory.glob("era5_southafrica_*.nc")):
+        parts = f.stem.split("_")   # era5_southafrica_YYYY_MM
+        try:
+            months.append((int(parts[-2]), int(parts[-1])))
+        except (ValueError, IndexError):
+            pass
+    return sorted(months)
+
+
+# ---------------------------------------------------------------------------
 # Hash utilities
 # ---------------------------------------------------------------------------
 
-def _file_fingerprints(directory: Path, pattern: str) -> list:
-    files = sorted(directory.glob(pattern))
-    return [(str(f), f.stat().st_mtime, f.stat().st_size) for f in files if f.exists()]
-
-
 def compute_data_hash(dataset: str, config: Dict[str, Any]) -> str:
-    """SHA-256 fingerprint of raw data file mtimes + preprocessing config keys."""
+    """
+    SHA-256 fingerprint of raw data manifest (filename stems) + preprocessing
+    config keys.
+
+    Filename stems (e.g. 'era5_southafrica_2010_01') are stable identifiers —
+    they change only when new months are added, not when existing files are
+    re-touched or re-downloaded.
+    """
     h = hashlib.sha256()
     if dataset == "era5":
-        fps = _file_fingerprints(ERA5_RAW_DIR, "era5_southafrica_*.nc")
+        manifest = _manifest_fingerprint(ERA5_RAW_DIR, "era5_southafrica_*.nc")
     elif dataset == "saws":
-        fps = _file_fingerprints(SAWS_RAW_DIR, "*.csv")
+        manifest = _manifest_fingerprint(SAWS_RAW_DIR, "*.csv")
     else:
-        fps = []
-    h.update(json.dumps(fps, sort_keys=True).encode())
+        manifest = []
+    h.update(json.dumps(manifest, sort_keys=True).encode())
     preproc_keys = ["input_len", "horizon", "train_ratio", "val_ratio",
                     "lat_stride", "lon_stride", "distance_threshold_km",
-                    "sigma_km"]
+                    "sigma_km", "derive_variables"]
     h.update(json.dumps({k: config.get(k) for k in preproc_keys}, sort_keys=True).encode())
     h.update(dataset.encode())
     return h.hexdigest()
@@ -130,6 +167,51 @@ def _write_hash(dataset: str, current_hash: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Cache coverage verification
+# ---------------------------------------------------------------------------
+
+def verify_cache_coverage(dataset: str) -> Dict[str, Any]:
+    """
+    Compare what the cache covers against what is on disk.
+
+    Returns a dict:
+      status:             "ok" | "stale" | "no_cache"
+      n_cached:           number of months in the cache manifest
+      n_on_disk:          number of monthly files on disk right now
+      missing_from_cache: [(year, month), ...] on disk but absent from cache
+      extra_in_cache:     [(year, month), ...] in cache but not on disk
+                          (should never happen; indicates a cache corruption)
+    """
+    if not _cache_exists(dataset):
+        return {
+            "status":             "no_cache",
+            "n_cached":           0,
+            "n_on_disk":          0,
+            "missing_from_cache": [],
+            "extra_in_cache":     [],
+        }
+
+    cached = load_cache(dataset)
+    cached_months = set(map(tuple, cached["meta"].get("manifest", [])))
+
+    if dataset == "era5":
+        disk_months = set(_era5_month_list(ERA5_RAW_DIR))
+    else:
+        disk_months = set()  # SAWS manifest not yet implemented
+
+    missing = sorted(disk_months - cached_months)
+    extra   = sorted(cached_months - disk_months)
+
+    return {
+        "status":             "ok" if not missing else "stale",
+        "n_cached":           len(cached_months),
+        "n_on_disk":          len(disk_months),
+        "missing_from_cache": missing,
+        "extra_in_cache":     extra,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
 
@@ -141,7 +223,8 @@ def run_pipeline(
     Entry point called by cli.py. Returns:
         train_loader, val_loader, test_loader,
         adjacency_matrix (N, N),
-        preprocessing_metadata {var_names, n_nodes, n_vars, mean, std, thresholds}
+        preprocessing_metadata {var_names, n_nodes, n_vars, mean, std, thresholds,
+                                 manifest, date_range, n_months}
 
     Args:
         config:      merged config dict from YAML + CLI overrides.
@@ -196,11 +279,20 @@ def run_pipeline(
         X, timestamps, coords, var_names = parse_era5_files(
             str(ERA5_RAW_DIR), lat_stride=lat_stride, lon_stride=lon_stride,
         )
+        manifest = _era5_month_list(ERA5_RAW_DIR)
     elif dataset == "saws":
         from preprocessing.saws_parser import parse_saws_files
         X, timestamps, coords, var_names = parse_saws_files(str(SAWS_RAW_DIR))
+        manifest = []
     else:
         raise ValueError(f"Unknown dataset: {dataset!r}")
+
+    # 1b. Derive ---------------------------------------------------------
+    derive = preproc.get("derive_variables", True)
+    if dataset == "era5" and derive:
+        log.info("Step 1b/6: Deriving ws10 and rh from raw ERA5 variables…")
+        X, var_names = derive_era5_variables(X, var_names)
+        log.info("  var_names=%s  d=%d", var_names, X.shape[-1])
 
     # 2. Impute ----------------------------------------------------------
     log.info("Step 2/6: Imputing missing values…")
@@ -233,14 +325,24 @@ def run_pipeline(
     )
 
     # Save ---------------------------------------------------------------
+    date_range = {}
+    if manifest:
+        date_range = {
+            "start": f"{manifest[0][0]}-{manifest[0][1]:02d}",
+            "end":   f"{manifest[-1][0]}-{manifest[-1][1]:02d}",
+        }
+
     meta = {
-        "var_names": var_names,
-        "n_nodes":   int(adj.shape[0]),
-        "n_vars":    len(var_names),
-        "dataset":   dataset,
-        "task":      task,
-        "input_len": input_len,
-        "horizon":   horizon,
+        "var_names":  var_names,
+        "n_nodes":    int(adj.shape[0]),
+        "n_vars":     len(var_names),
+        "dataset":    dataset,
+        "task":       task,
+        "input_len":  input_len,
+        "horizon":    horizon,
+        "manifest":   manifest,
+        "n_months":   len(manifest),
+        "date_range": date_range,
     }
     save_cache(dataset, {
         "X_train": X_train, "X_val": X_val,   "X_test": X_test,
@@ -254,6 +356,8 @@ def run_pipeline(
     })
     _write_hash(dataset, current_hash)
     log.info("Preprocessing complete — cache written to %s", CACHE_DIR / dataset)
+    log.info("  Coverage: %s → %s  (%d months)",
+             date_range.get("start", "?"), date_range.get("end", "?"), len(manifest))
 
     train_loader, val_loader, test_loader = build_dataloaders(
         np.clip(X_train, -clip_sigma, clip_sigma),

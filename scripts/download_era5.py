@@ -5,10 +5,6 @@ Credentials must be in ~/.cdsapirc:
     url: https://cds.climate.copernicus.eu/api
     key: <your-personal-access-token>
 
-Downloads one year at a time so the process is resumable — if interrupted,
-re-running skips files that already exist. All 6 variables are downloaded
-together per year into a single NetCDF file.
-
 South Africa bounding box: N=-22, W=15, S=-35, E=33 (0.25° resolution).
 
 Variables:
@@ -17,17 +13,21 @@ Variables:
 
 Downloads one month at a time to stay within the CDS free-tier request size limit
 (a full year of 6 variables exceeds it). Each month produces one NetCDF file.
-Total files for 2010–2023: 168 (14 years × 12 months).
+Resumable: already-downloaded files are skipped. Future months (not yet fully
+elapsed) are skipped automatically — re-run periodically to pick up new months.
+
+Total files for 2000–2026: ~317 (varies with how recent ERA5T data is available).
 
 Usage:
-    python scripts/download_era5.py                        # 2010-2023, all months
+    python scripts/download_era5.py                        # 2000-2026, all months
     python scripts/download_era5.py --year-start 2020 --year-end 2023
-    python scripts/download_era5.py --year-start 2010 --year-end 2010  # single year
+    python scripts/download_era5.py --year-start 2000 --year-end 2000  # single year
 """
 
 import argparse
 import sys
 import time
+from datetime import date as _date
 from pathlib import Path
 
 import cdsapi
@@ -71,12 +71,27 @@ MONTH_NAMES = {
 }
 
 
+def _is_complete_month(year: int, month: int) -> bool:
+    """
+    Return True if the month has fully elapsed with sufficient ERA5T lag.
+
+    ERA5T (near-real-time) has a ~5 day processing lag. A month is considered
+    complete for download purposes once it ended at least 5 days ago.
+    Future months and the current partial month return False.
+    """
+    if month == 12:
+        month_end = _date(year + 1, 1, 1)
+    else:
+        month_end = _date(year, month + 1, 1)
+    return (_date.today() - month_end).days >= 5
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Download ERA5 hourly data for South Africa")
-    p.add_argument("--year-start", type=int, default=2010,
-                   help="First year to download (default: 2010)")
-    p.add_argument("--year-end",   type=int, default=2023,
-                   help="Last year to download inclusive (default: 2023)")
+    p.add_argument("--year-start", type=int, default=2000,
+                   help="First year to download (default: 2000)")
+    p.add_argument("--year-end",   type=int, default=2026,
+                   help="Last year to download inclusive (default: 2026)")
     return p.parse_args()
 
 
@@ -169,6 +184,12 @@ def main() -> None:
         downloaded = skipped = errors = 0
         for year in years:
             for month in range(1, 13):
+                if not _is_complete_month(year, month):
+                    progress.update(task_id=task,
+                                    description=f"[dim]⏭  Skipping future month {year}-{month:02d}[/dim]",
+                                    advance=1)
+                    skipped += 1
+                    continue
                 try:
                     got_new = download_month(client, year, month, OUTPUT_DIR, progress, task)
                     if got_new:

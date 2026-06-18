@@ -1,195 +1,173 @@
 """
 Regression evaluation metrics for Phase 1.
 
-All metrics are computed per station then aggregated (mean ± std) across stations.
-Per-station results are also returned to support geographic stratification in Phase 3.
+Design (post-2026-06-18 audit):
+  * Error metrics (MAE / RMSE / MSE / sMAPE, stratified, peak) are computed
+    PER VARIABLE and, when z-score stats are supplied, in PHYSICAL UNITS.
+    Pooling across variables is meaningless once denormalised, so every error
+    metric is keyed by variable name.
+  * NRMSE / VPT are computed on the NORMALISED arrays, where each variable has
+    ~unit variance, so the epsilon threshold reads as a fraction of a standard
+    deviation and is comparable across variables.
+  * Per-station (N, d) arrays are retained under 'per_station' for Phase 3.
+    NOTE: these are ndarrays — strip or convert before JSON/MLflow serialisation.
 
-Input convention for most functions: preds/targets of shape (T, N, d), where
-T = samples * H flattened, N = nodes, d = variables. nrmse_per_horizon is the
-exception — it requires the (samples, H, N, d) shape to compute per-step NRMSE.
-
-Metrics:
-  MAE              — mean absolute error (primary metric)
-  RMSE             — root mean squared error
-  MSE              — mean squared error (training loss reference)
-  MAPE             — mean absolute percentage error (scale-independent)
-  Stratified MAE   — MAE split by extreme vs. non-extreme timesteps
-  Peak Intensity Error — MAE on the predicted maximum within each extreme window
-  NRMSE(t_f)       — RMSE at each forecast step t_f normalised by ground-truth std
-  VPT              — max { t_f : NRMSE(t_f) < ε }; measures temporal robustness
+Array conventions:
+  preds / targets : (samples, H, N, d)   NORMALISED, as the model emits.
+  mean / std      : (1, N, d)            train-only z-score stats.
+  extreme_mask    : (samples, H, N, d) or (samples*H, N, d), bool/0-1, or None.
 """
 
 import numpy as np
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+
+ERA5_VAR_NAMES = ["t2m", "d2m", "tp", "u10", "v10", "sp", "ws10", "rh"]
+REPORT_VARS = ["t2m", "rh", "ws10", "sp"]   # the four Gaibie (2024) targets
 
 
-def mae(preds: np.ndarray, targets: np.ndarray) -> np.ndarray:
-    """MAE per station averaged over time and variables. Shape: (N,)."""
-    return np.abs(preds - targets).mean(axis=(0, 2))
+def _denormalise(arr: np.ndarray, mean: np.ndarray, std: np.ndarray) -> np.ndarray:
+    """Invert z-score. arr: (samples, H, N, d); mean/std broadcast from (1, N, d)."""
+    m = np.asarray(mean).reshape(1, 1, arr.shape[2], arr.shape[3])
+    s = np.asarray(std).reshape(1, 1, arr.shape[2], arr.shape[3])
+    return arr * s + m
 
 
-def rmse(preds: np.ndarray, targets: np.ndarray) -> np.ndarray:
-    """RMSE per station averaged over time and variables. Shape: (N,)."""
-    return np.sqrt(((preds - targets) ** 2).mean(axis=(0, 2)))
+def _as_4d_mask(mask: np.ndarray, shape: Tuple[int, int, int, int]) -> np.ndarray:
+    """Accept (samples, H, N, d) or (samples*H, N, d); return (samples, H, N, d) bool."""
+    samples, H, N, d = shape
+    mask = np.asarray(mask)
+    if mask.ndim == 4:
+        return mask.astype(bool)
+    return mask.reshape(samples, H, N, d).astype(bool)
 
 
-def mse(preds: np.ndarray, targets: np.ndarray) -> np.ndarray:
-    """MSE per station averaged over time and variables. Shape: (N,)."""
-    return ((preds - targets) ** 2).mean(axis=(0, 2))
+# --- per-variable point-error metrics (operate on physical-unit arrays) ----- #
+
+def per_station_var_mae(preds, targets):    # (samples,H,N,d) -> (N,d)
+    return np.abs(preds - targets).mean(axis=(0, 1))
+
+def per_station_var_rmse(preds, targets):   # -> (N,d)
+    return np.sqrt(((preds - targets) ** 2).mean(axis=(0, 1)))
+
+def per_station_var_mse(preds, targets):    # -> (N,d)
+    return ((preds - targets) ** 2).mean(axis=(0, 1))
+
+def per_station_var_smape(preds, targets, eps=1e-3):   # -> (N,d), range [0,2]
+    """Symmetric MAPE; bounded even when targets ~ 0 (unlike MAPE)."""
+    denom = (np.abs(preds) + np.abs(targets)) / 2.0 + eps
+    return (np.abs(preds - targets) / denom).mean(axis=(0, 1))
 
 
-def mape(preds: np.ndarray, targets: np.ndarray, eps: float = 1e-8) -> np.ndarray:
-    """MAPE per station. Shape: (N,). eps guards against division by zero."""
-    return (np.abs(preds - targets) / (np.abs(targets) + eps)).mean(axis=(0, 2))
-
-
-def stratified_mae(
-    preds: np.ndarray, targets: np.ndarray, extreme_mask: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    MAE computed separately for extreme and non-extreme timesteps per station.
-
-    Args:
-        preds, targets: shape (T, N, d).
-        extreme_mask: binary array shape (T, N, d), 1 where timestep is extreme.
-
-    Returns:
-        (mae_extreme, mae_nonextreme), each shape (N,).
-    """
-    T, N, d = preds.shape
+def stratified_var_mae(preds, targets, mask4d):
+    """Per-station, per-variable MAE split extreme/non-extreme. (N,d) each, NaN if empty."""
     err = np.abs(preds - targets)
-
-    mask = extreme_mask.astype(bool)
-    inv_mask = ~mask
-
-    mae_ext = np.zeros(N)
-    mae_non = np.zeros(N)
-
-    for n in range(N):
-        ext_vals = err[:, n, :][mask[:, n, :]]
-        non_vals = err[:, n, :][inv_mask[:, n, :]]
-        mae_ext[n] = ext_vals.mean() if ext_vals.size > 0 else 0.0
-        mae_non[n] = non_vals.mean() if non_vals.size > 0 else 0.0
-
-    return mae_ext, mae_non
+    ext_err = np.where(mask4d, err, np.nan)
+    non_err = np.where(mask4d, np.nan, err)
+    with np.errstate(invalid="ignore"):
+        return np.nanmean(ext_err, axis=(0, 1)), np.nanmean(non_err, axis=(0, 1))
 
 
-def peak_intensity_error(
-    preds: np.ndarray, targets: np.ndarray, extreme_mask: np.ndarray
-) -> np.ndarray:
+def peak_intensity_error(preds, targets, mask4d):
     """
-    MAE on the predicted maximum within each contiguous extreme event window.
+    Per-station, per-variable peak error WITHIN each forecast window.
+    For each window containing >=1 extreme timestep for (n,v), compare
+    max(pred over H) with max(target over H). Averaged over windows. (N,d), NaN if none.
 
-    For each station and variable, finds contiguous runs of extreme timesteps,
-    then computes |max(pred in window) - max(target in window)|.
-
-    Shape: (N,).
+    Deliberately does NOT scan the flattened sample axis — those 'runs' are
+    sliding-window artefacts. The H axis of one sample is a genuine contiguous horizon.
     """
-    T, N, d = preds.shape
-    result = np.zeros(N)
-
-    for n in range(N):
-        errors = []
-        for v in range(d):
-            mask_nv = extreme_mask[:, n, v].astype(bool)
-            if not mask_nv.any():
-                continue
-
-            # Find contiguous windows via diff
-            padded = np.concatenate([[False], mask_nv, [False]])
-            starts = np.where(~padded[:-1] & padded[1:])[0]
-            ends = np.where(padded[:-1] & ~padded[1:])[0]
-
-            for ws, we in zip(starts, ends):
-                pred_peak = preds[ws:we, n, v].max()
-                tgt_peak = targets[ws:we, n, v].max()
-                errors.append(abs(pred_peak - tgt_peak))
-
-        result[n] = float(np.mean(errors)) if errors else 0.0
-
-    return result
+    win_has_ext = mask4d.any(axis=1)            # (samples,N,d)
+    pred_peak = preds.max(axis=1)
+    tgt_peak = targets.max(axis=1)
+    peak_err = np.where(win_has_ext, np.abs(pred_peak - tgt_peak), np.nan)
+    with np.errstate(invalid="ignore"):
+        return np.nanmean(peak_err, axis=0)     # (N,d)
 
 
-def nrmse_per_horizon(
-    preds: np.ndarray, targets: np.ndarray
-) -> np.ndarray:
+# --- temporal robustness (operate on NORMALISED arrays) --------------------- #
+
+def nrmse_per_horizon(preds_norm, targets_norm):   # (samples,H,N,d) -> (H,d)
+    se = (preds_norm - targets_norm) ** 2
+    rmse_hv = np.sqrt(se.mean(axis=(0, 2)))
+    std_hv = targets_norm.std(axis=(0, 2)) + 1e-8
+    return rmse_hv / std_hv
+
+
+def valid_prediction_time(nrmse_curve, epsilon):
     """
-    NRMSE at each forecast step t_f, normalised by std of ground truth.
-
-    Args:
-        preds, targets: shape (samples, H, N, d).
-
-    Returns:
-        NRMSE curve of shape (H,).
+    First-crossing VPT for one variable: number of leading horizon steps (0..H)
+    that stay below epsilon. Once the curve crosses epsilon the forecast is
+    invalid thereafter, even if it dips back (which 'last step below' wrongly rewards).
+    nrmse_curve: (H,).
     """
-    _, H, _, _ = preds.shape
-    nrmse_curve = np.zeros(H)
-
-    for h in range(H):
-        pred_h = preds[:, h, :, :]    # (samples, N, d)
-        tgt_h = targets[:, h, :, :]
-        rmse_h = float(np.sqrt(((pred_h - tgt_h) ** 2).mean()))
-        std_h = float(tgt_h.std()) + 1e-8
-        nrmse_curve[h] = rmse_h / std_h
-
-    return nrmse_curve
-
-
-def valid_prediction_time(nrmse_curve: np.ndarray, epsilon: float) -> int:
-    """
-    VPT = max { t_f : NRMSE(t_f) < epsilon }.
-
-    Returns the last (0-indexed) forecast step where NRMSE is still below
-    epsilon, or 0 if NRMSE exceeds epsilon at step 0.
-    """
-    below = np.where(nrmse_curve < epsilon)[0]
-    return int(below[-1]) if below.size > 0 else 0
+    above = np.where(nrmse_curve >= epsilon)[0]
+    return int(above[0]) if above.size > 0 else len(nrmse_curve)
 
 
 def compute_all(
     preds: np.ndarray,
     targets: np.ndarray,
-    extreme_mask: Optional[np.ndarray],
-    vpt_epsilon: float,
-) -> Dict[str, float]:
+    extreme_mask: Optional[np.ndarray] = None,
+    vpt_epsilon: float = 0.3,
+    mean: Optional[np.ndarray] = None,
+    std: Optional[np.ndarray] = None,
+    var_names: Optional[List[str]] = None,
+    report_vars: Optional[List[str]] = None,
+) -> Dict:
     """
-    Compute all regression metrics and return as a flat dict (mean across stations).
-
-    Args:
-        preds, targets: shape (samples, H, N, d).
-        extreme_mask:   shape (T, N, d) where T = samples * H, or None.
-        vpt_epsilon:    NRMSE threshold for VPT.
+    preds, targets : (samples, H, N, d), NORMALISED.
+    extreme_mask   : (samples,H,N,d) or (samples*H,N,d) or None.
+    vpt_epsilon    : NRMSE threshold (fraction of a std). Default 0.3.
+    mean, std      : (1,N,d) train stats. If given, error metrics are PHYSICAL.
     """
     samples, H, N, d = preds.shape
-    T = samples * H
+    if var_names is None:
+        var_names = ERA5_VAR_NAMES if d == len(ERA5_VAR_NAMES) else [f"var{i}" for i in range(d)]
+    if report_vars is None:
+        report_vars = [v for v in REPORT_VARS if v in var_names]
 
-    preds_flat = preds.reshape(T, N, d)
-    targets_flat = targets.reshape(T, N, d)
+    nrmse_curve = nrmse_per_horizon(preds, targets)            # (H,d), normalised
+    vpt = {var_names[v]: valid_prediction_time(nrmse_curve[:, v], vpt_epsilon)
+           for v in range(d)}
 
-    mae_vals = mae(preds_flat, targets_flat)
-    rmse_vals = rmse(preds_flat, targets_flat)
-    mse_vals = mse(preds_flat, targets_flat)
-    mape_vals = mape(preds_flat, targets_flat)
+    if mean is not None and std is not None:
+        p, t, units = _denormalise(preds, mean, std), _denormalise(targets, mean, std), "physical"
+    else:
+        p, t, units = preds, targets, "normalised"
 
-    nrmse_curve = nrmse_per_horizon(preds, targets)
-    vpt = valid_prediction_time(nrmse_curve, vpt_epsilon)
+    mae_nd = per_station_var_mae(p, t)
+    rmse_nd = per_station_var_rmse(p, t)
+    mse_nd = per_station_var_mse(p, t)
+    smape_nd = per_station_var_smape(p, t)
 
     if extreme_mask is not None:
-        mae_ext, mae_non = stratified_mae(preds_flat, targets_flat, extreme_mask)
-        pie = peak_intensity_error(preds_flat, targets_flat, extreme_mask)
+        mask4d = _as_4d_mask(extreme_mask, (samples, H, N, d))
+        mae_ext_nd, mae_non_nd = stratified_var_mae(p, t, mask4d)
+        pie_nd = peak_intensity_error(p, t, mask4d)
     else:
-        mae_ext = mae_non = pie = np.zeros(N)
+        mae_ext_nd = mae_non_nd = pie_nd = np.full((N, d), np.nan)
+
+    def by_var(a):
+        with np.errstate(invalid="ignore"):
+            return {var_names[v]: float(np.nanmean(a[:, v])) for v in range(d)}
 
     return {
-        "mae":                  float(mae_vals.mean()),
-        "mae_std":              float(mae_vals.std()),
-        "rmse":                 float(rmse_vals.mean()),
-        "rmse_std":             float(rmse_vals.std()),
-        "mse":                  float(mse_vals.mean()),
-        "mape":                 float(mape_vals.mean()),
-        "mae_extreme":          float(mae_ext.mean()),
-        "mae_nonextreme":       float(mae_non.mean()),
-        "peak_intensity_error": float(pie.mean()),
-        "nrmse_per_horizon":    nrmse_curve.tolist(),
-        "vpt":                  int(vpt),
+        "units": units,
+        "vpt_epsilon": vpt_epsilon,
+        "report_vars": report_vars,
+        "mae": by_var(mae_nd),
+        "rmse": by_var(rmse_nd),
+        "mse": by_var(mse_nd),
+        "smape": by_var(smape_nd),
+        "mae_extreme": by_var(mae_ext_nd),
+        "mae_nonextreme": by_var(mae_non_nd),
+        "peak_intensity_error": by_var(pie_nd),
+        "nrmse_per_horizon": {var_names[v]: nrmse_curve[:, v].tolist() for v in range(d)},
+        "vpt": vpt,
+        "mae_pooled_norm": float(np.abs(preds - targets).mean()),   # z-space monitor only
+        "per_station": {
+            "mae": mae_nd, "rmse": rmse_nd,
+            "mae_extreme": mae_ext_nd, "mae_nonextreme": mae_non_nd,
+            "peak_intensity_error": pie_nd,
+        },
     }

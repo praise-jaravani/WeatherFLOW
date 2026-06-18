@@ -22,7 +22,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from torch.utils.data import DataLoader
-from typing import Dict
+from typing import Dict, Optional
 
 
 def count_parameters(model: nn.Module) -> float:
@@ -31,29 +31,46 @@ def count_parameters(model: nn.Module) -> float:
     return n / 1e6
 
 
-def count_flops(model: nn.Module, sample_input: torch.Tensor) -> float:
+import logging as _logging
+_log = _logging.getLogger(__name__)
+
+
+def count_flops(model: nn.Module, sample_input: torch.Tensor) -> Optional[float]:
     """
     Measure FLOPs per forward pass in billions (G) using torchinfo.
 
-    Falls back to 0.0 if torchinfo is unavailable or the model cannot be
-    profiled (e.g. graph models with non-standard inputs).
+    Returns None if torchinfo is unavailable, the model is untraceable (e.g.
+    adaptive ODE solvers), or torchinfo reports 0 — so callers always get either
+    a meaningful positive number or an explicit None rather than a silent 0.
 
     Args:
         model:        the nn.Module to profile.
         sample_input: a single batch tensor — must already be on the correct device.
 
     Returns:
-        FLOPs in billions (G).
+        FLOPs in billions (G), or None.
     """
     try:
-        from torchinfo import summary  # noqa: PLC0415
+        from torchinfo import summary as ti_summary  # noqa: PLC0415
         was_training = model.training
-        stats = summary(model, input_data=sample_input, verbose=0)
+        info = ti_summary(model, input_data=sample_input, verbose=0)
         if was_training:
             model.train()
-        return stats.total_mult_adds / 1e9
-    except Exception:
-        return 0.0
+        flops = info.total_mult_adds
+        if not flops:
+            _log.warning(
+                "torchinfo reported 0 FLOPs for %s — untraceable op "
+                "(e.g. odeint) or bad sample input. Reporting n/a.",
+                type(model).__name__,
+            )
+            return None
+        return flops / 1e9
+    except Exception as exc:
+        _log.warning(
+            "FLOP counting failed for %s: %s. Reporting n/a.",
+            type(model).__name__, exc,
+        )
+        return None
 
 
 def measure_inference_time(
@@ -105,8 +122,9 @@ def measure_inference_time(
     return total_ms / total_samples
 
 
-def record_static_metrics(model: nn.Module, sample_input: torch.Tensor) -> Dict[str, float]:
-    """Compute and return parameter count and FLOPs. Called before the run loop."""
+def record_static_metrics(model: nn.Module, sample_input: torch.Tensor) -> Dict:
+    """Compute and return parameter count and FLOPs. Called before the run loop.
+    flops_G is None when the model is untraceable (ODE solvers, etc.)."""
     return {
         "params_M": count_parameters(model),
         "flops_G":  count_flops(model, sample_input),

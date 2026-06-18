@@ -199,17 +199,71 @@ def _build_loss(task: str, train_loader, device: torch.device) -> torch.nn.Modul
 # ---------------------------------------------------------------------------
 
 def _aggregate_metrics(all_metrics: list) -> dict:
-    """Compute mean ± std across seeds for each metric key."""
+    """
+    Aggregate per-seed regression metric dicts (compute_all output, 'per_station'
+    already removed). Produces a per-variable summary, preserves the NRMSE curve,
+    and stores raw per-seed arrays under 'per_seed' for Wilcoxon.
+
+    Falls back to the old scalar aggregator for classification (no 'mae' dict).
+    """
     if not all_metrics:
         return {}
-    keys = all_metrics[0].keys()
-    result = {}
-    for k in keys:
-        vals = [m[k] for m in all_metrics if k in m]
-        arr = np.array(vals, dtype=float)
-        result[f"{k}_mean"] = float(arr.mean())
-        result[f"{k}_std"] = float(arr.std())
-    return result
+
+    seed0 = all_metrics[0]
+
+    # Classification fallback: all values are plain scalars
+    if "mae" not in seed0 or not isinstance(seed0.get("mae"), dict):
+        result = {}
+        for k in seed0.keys():
+            vals = [m[k] for m in all_metrics if k in m and isinstance(m[k], (int, float))]
+            if vals:
+                arr = np.array(vals, dtype=float)
+                result[f"{k}_mean"] = float(arr.mean())
+                result[f"{k}_std"] = float(arr.std())
+        return result
+
+    # Regression path: per-variable dicts
+    PER_VAR = ["mae", "rmse", "mse", "smape", "mae_extreme",
+               "mae_nonextreme", "peak_intensity_error", "vpt"]
+    summary = {}
+    for k in ("units", "vpt_epsilon", "report_vars"):
+        if k in seed0:
+            summary[k] = seed0[k]
+
+    var_names = list(seed0.get("mae", {}).keys())
+
+    per_variable = {v: {} for v in var_names}
+    per_seed = {}
+    for key in PER_VAR:
+        if key not in seed0:
+            continue
+        per_seed[key] = {}
+        for v in var_names:
+            vals = np.array([m[key][v] for m in all_metrics], dtype=float)
+            per_variable[v][f"{key}_mean"] = float(np.nanmean(vals))
+            per_variable[v][f"{key}_std"] = float(np.nanstd(vals))
+            per_seed[key][v] = vals.tolist()
+    summary["per_variable"] = per_variable
+
+    if "nrmse_per_horizon" in seed0:
+        nrmse = {}
+        for v in var_names:
+            curves = np.array([m["nrmse_per_horizon"][v] for m in all_metrics], dtype=float)
+            nrmse[v] = {"mean": np.nanmean(curves, axis=0).tolist(),
+                        "std": np.nanstd(curves, axis=0).tolist()}
+        summary["nrmse_per_horizon"] = nrmse
+
+    skip = set(PER_VAR) | {"nrmse_per_horizon", "per_station",
+                           "units", "vpt_epsilon", "report_vars"}
+    for key, val in seed0.items():
+        if key in skip or not isinstance(val, (int, float)):
+            continue
+        vals = np.array([m[key] for m in all_metrics], dtype=float)
+        summary[f"{key}_mean"] = float(np.nanmean(vals))
+        summary[f"{key}_std"] = float(np.nanstd(vals))
+
+    summary["per_seed"] = per_seed
+    return summary
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +350,31 @@ def main():
     # Preprocessing
     # ------------------------------------------------------------------
     console.print("\n[bold]Preprocessing...[/bold]")
-    from preprocessing.pipeline import run_pipeline  # noqa: PLC0415
+    from preprocessing.pipeline import run_pipeline, verify_cache_coverage  # noqa: PLC0415
+
+    if not args.no_cache:
+        coverage = verify_cache_coverage(config.get("dataset", "era5"))
+        if coverage["status"] == "stale":
+            n_missing = len(coverage["missing_from_cache"])
+            first, last = coverage["missing_from_cache"][0], coverage["missing_from_cache"][-1]
+            console.print(
+                f"  [yellow]Warning: cache is stale — {n_missing} month(s) on disk not in cache "
+                f"({first[0]}-{first[1]:02d} … {last[0]}-{last[1]:02d}). "
+                f"Run with --no-cache to rebuild (recommended on HPC).[/yellow]"
+            )
+        elif coverage["status"] == "ok" and coverage["n_cached"] > 0:
+            meta_info = {}
+            try:
+                from preprocessing.pipeline import load_cache  # noqa: PLC0415
+                meta_info = load_cache(config.get("dataset", "era5"))["meta"]
+            except Exception:
+                pass
+            dr = meta_info.get("date_range", {})
+            console.print(
+                f"  Cache covers {coverage['n_cached']} months "
+                + (f"({dr.get('start', '?')} → {dr.get('end', '?')})" if dr else "")
+            )
+
     train_loader, val_loader, test_loader, adj, meta = run_pipeline(
         config=config,
         force_rerun=args.no_cache,
@@ -340,9 +418,10 @@ def main():
     del _probe_adapter, _probe_model, sample_x
     torch.cuda.empty_cache() if device.type == "cuda" else None
 
+    flops_str = f"{static_metrics['flops_G']:.3f}G" if static_metrics["flops_G"] is not None else "n/a"
     console.print(
         f"  params={static_metrics['params_M']:.3f}M  "
-        f"flops={static_metrics['flops_G']:.3f}G"
+        f"flops={flops_str}"
     )
 
     # ------------------------------------------------------------------
@@ -364,14 +443,14 @@ def main():
     output_dir = make_output_dir(args.model, args.dataset, args.task)
     console.print(f"  Output dir: {output_dir}")
 
-    # Extreme mask for stratified regression metrics (optional)
-    extreme_mask: Optional[np.ndarray] = meta.get("test_extreme_mask")
-
     # ------------------------------------------------------------------
     # Run loop (10 seeds)
     # ------------------------------------------------------------------
     from training.seed import seed_everything  # noqa: PLC0415
     from training.trainer import Trainer       # noqa: PLC0415
+    from evaluation.regression import ERA5_VAR_NAMES  # noqa: PLC0415
+
+    vpt_epsilon = float(config.get("evaluation", {}).get("vpt_epsilon", 0.3))
 
     seeds = list(range(42, 42 + args.runs))
     all_metrics = []
@@ -402,18 +481,23 @@ def main():
                 output_dir=run_dir,
                 seed=seed,
                 mlflow_enabled=mlflow_on,
-                extreme_mask=extreme_mask,
+                norm_mean=meta["mean"],
+                norm_std=meta["std"],
+                thresholds=meta["thresholds"],
+                var_names=meta.get("var_names", ERA5_VAR_NAMES),
+                vpt_epsilon=vpt_epsilon,
             ).train()
 
         if mlflow_enabled:
             import mlflow  # noqa: PLC0415
+            safe_static = {k: (v if v is not None else "n/a") for k, v in static_metrics.items()}
             with mlflow.start_run(run_name=f"seed_{seed}"):
                 mlflow.log_params({
                     "seed": seed,
                     "model": args.model,
                     "dataset": args.dataset,
                     "task": args.task,
-                    **static_metrics,
+                    **safe_static,
                 })
                 result = _run_one(mlflow_on=True)
         else:
@@ -435,9 +519,11 @@ def main():
         test_m = result.get("test_metrics", {})
         all_metrics.append(test_m)
 
+        # Print quick per-seed scalar summary (pooled norm MAE + inference time)
+        scalars = {k: v for k, v in test_m.items() if isinstance(v, (int, float))}
         _summary_line = "  " + "  ".join(
-            f"{k}={v:.4f}" for k, v in test_m.items()
-            if isinstance(v, float) and not k.endswith("_std")
+            f"{k}={v:.4f}" for k, v in scalars.items()
+            if not k.endswith("_std")
         )
         console.print(_summary_line)
 
@@ -450,7 +536,7 @@ def main():
         "dataset": args.dataset,
         "task":    args.task,
         "seeds":   seeds,
-        **static_metrics,
+        **{k: (v if v is not None else None) for k, v in static_metrics.items()},
     })
 
     summary_path = output_dir / "summary.json"
@@ -469,9 +555,17 @@ def main():
     console.print(f"Plots    → {output_dir / 'plots'}")
 
     # Print key aggregate metrics
-    primary = "mae_mean" if args.task == "regression" else "f1_mean"
-    if primary in summary:
-        console.print(f"  {primary.replace('_mean', '')} = {summary[primary]:.4f} ± {summary.get(primary.replace('mean','std'), 0):.4f}")
+    if args.task == "regression":
+        pv = summary.get("per_variable", {})
+        report = summary.get("report_vars", list(pv.keys())[:1])
+        for var in report:
+            if var in pv and "mae_mean" in pv[var]:
+                mae_mean = pv[var]["mae_mean"]
+                mae_std = pv[var].get("mae_std", 0.0)
+                console.print(f"  mae[{var}] = {mae_mean:.4f} ± {mae_std:.4f} (physical units)")
+    else:
+        if "f1_mean" in summary:
+            console.print(f"  f1 = {summary['f1_mean']:.4f} ± {summary.get('f1_std', 0):.4f}")
 
 
 if __name__ == "__main__":
