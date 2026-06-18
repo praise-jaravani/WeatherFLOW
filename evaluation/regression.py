@@ -18,6 +18,8 @@ Array conventions:
   extreme_mask    : (samples, H, N, d) or (samples*H, N, d), bool/0-1, or None.
 """
 
+import warnings
+
 import numpy as np
 from typing import Dict, List, Optional, Tuple
 
@@ -63,7 +65,8 @@ def stratified_var_mae(preds, targets, mask4d):
     err = np.abs(preds - targets)
     ext_err = np.where(mask4d, err, np.nan)
     non_err = np.where(mask4d, np.nan, err)
-    with np.errstate(invalid="ignore"):
+    with np.errstate(invalid="ignore"), warnings.catch_warnings():
+        warnings.filterwarnings("ignore", "Mean of empty slice", RuntimeWarning)
         return np.nanmean(ext_err, axis=(0, 1)), np.nanmean(non_err, axis=(0, 1))
 
 
@@ -80,7 +83,8 @@ def peak_intensity_error(preds, targets, mask4d):
     pred_peak = preds.max(axis=1)
     tgt_peak = targets.max(axis=1)
     peak_err = np.where(win_has_ext, np.abs(pred_peak - tgt_peak), np.nan)
-    with np.errstate(invalid="ignore"):
+    with np.errstate(invalid="ignore"), warnings.catch_warnings():
+        warnings.filterwarnings("ignore", "Mean of empty slice", RuntimeWarning)
         return np.nanmean(peak_err, axis=0)     # (N,d)
 
 

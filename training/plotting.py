@@ -102,10 +102,20 @@ def plot_nrmse_horizon(
     """
     import numpy as np  # noqa: PLC0415
 
+    REPORT_VARS = ["t2m", "rh", "ws10", "sp"]
+
+    # nrmse_per_horizon is {var_name: [float, ...]} — average over report vars
     curves = []
     for h in histories:
         nrmse = h.get("test_metrics", {}).get("nrmse_per_horizon")
-        if nrmse:
+        if not nrmse:
+            continue
+        if isinstance(nrmse, dict):
+            var_curves = [np.array(v, dtype=float) for k, v in nrmse.items()
+                          if k in REPORT_VARS and isinstance(v, list)]
+            if var_curves:
+                curves.append(np.stack(var_curves).mean(axis=0))
+        else:
             curves.append(np.array(nrmse, dtype=float))
 
     if not curves:
@@ -119,7 +129,7 @@ def plot_nrmse_horizon(
     mean_curve = arr.mean(axis=0)
     std_curve  = arr.std(axis=0)
 
-    ax.plot(horizons, mean_curve, color="steelblue", linewidth=2, label="Mean NRMSE")
+    ax.plot(horizons, mean_curve, color="steelblue", linewidth=2, label="Mean NRMSE (avg report vars)")
     ax.fill_between(horizons, mean_curve - std_curve, mean_curve + std_curve,
                     color="steelblue", alpha=0.2, label="±1 std")
 
@@ -148,7 +158,7 @@ def plot_metric_boxplot(
     import numpy as np  # noqa: PLC0415
 
     if task == "regression":
-        metrics = ["mae", "rmse", "mape"]
+        metrics = ["mae", "rmse", "smape"]
     else:
         metrics = ["f1", "recall", "precision", "auc_roc"]
 
@@ -157,7 +167,15 @@ def plot_metric_boxplot(
         tm = h.get("test_metrics", {})
         for m in metrics:
             val = tm.get(m) or tm.get(f"{m}_mean")
-            if val is not None:
+            if val is None:
+                continue
+            if isinstance(val, dict):
+                # per-variable dict — average finite values for the boxplot
+                numeric = [v for v in val.values()
+                           if isinstance(v, (int, float)) and np.isfinite(v)]
+                if numeric:
+                    data[m].append(float(np.mean(numeric)))
+            else:
                 data[m].append(float(val))
 
     data = {k: v for k, v in data.items() if v}
