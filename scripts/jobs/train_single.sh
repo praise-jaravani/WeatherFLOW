@@ -12,6 +12,7 @@
 #SBATCH --gres=gpu:l40s:1
 #SBATCH --nodes=1
 #SBATCH --ntasks=4
+#SBATCH --mem=256G
 #SBATCH --time=24:00:00
 #SBATCH --job-name="wf_train"
 #SBATCH --mail-user=JRVPRA001@myuct.ac.za
@@ -28,6 +29,7 @@ SIF=/scratch/jrvpra001/weatherflow/container.sif
 CODE=/scratch/jrvpra001/weatherflow/WeatherFLOW
 
 RUN="singularity exec --nv \
+  --pwd /weatherflow \
   --bind ${CODE}:/weatherflow \
   --bind /scratch/jrvpra001:/scratch/jrvpra001 \
   ${SIF}"

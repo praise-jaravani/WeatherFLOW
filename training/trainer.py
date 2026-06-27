@@ -262,6 +262,10 @@ class Trainer:
 
     def _evaluate_test(self) -> Dict[str, Any]:
         """Load best checkpoint and evaluate on the test set."""
+        # TODO(perf): stream test eval. At 999 nodes the accumulated all_preds +
+        # all_targets reach ~35 GB peak (45K samples × 12H × 999N × 8d × 4B × 2),
+        # forcing --mem=128G. Refactor to compute metrics chunk-by-chunk so we
+        # never hold the full test prediction set in RAM. See specs/ for context.
         if self.checkpoint_path.exists():
             state = torch.load(
                 self.checkpoint_path, map_location=self.device, weights_only=True

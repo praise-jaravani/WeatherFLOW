@@ -91,10 +91,12 @@ def peak_intensity_error(preds, targets, mask4d):
 # --- temporal robustness (operate on NORMALISED arrays) --------------------- #
 
 def nrmse_per_horizon(preds_norm, targets_norm):   # (samples,H,N,d) -> (H,d)
+    # preds/targets are already z-scored using TRAIN climatology stats, so
+    # RMSE in z-score units IS NRMSE relative to climatology. Dividing further
+    # by test-set per-horizon std (the previous behaviour) over-normalises and
+    # inflated NRMSE enough to make VPT=0 across all variables.
     se = (preds_norm - targets_norm) ** 2
-    rmse_hv = np.sqrt(se.mean(axis=(0, 2)))
-    std_hv = targets_norm.std(axis=(0, 2)) + 1e-8
-    return rmse_hv / std_hv
+    return np.sqrt(se.mean(axis=(0, 2)))
 
 
 def valid_prediction_time(nrmse_curve, epsilon):

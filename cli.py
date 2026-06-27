@@ -70,6 +70,10 @@ def parse_args() -> argparse.Namespace:
         help="Number of seeds to run (seeds 42 through 42+runs-1)",
     )
     parser.add_argument(
+        "--seed-start", type=int, default=42,
+        help="First seed value; runs seeds seed-start through seed-start+runs-1",
+    )
+    parser.add_argument(
         "--horizon", type=int, default=None,
         help="Override forecast horizon in timesteps",
     )
@@ -452,7 +456,7 @@ def main():
 
     vpt_epsilon = float(config.get("evaluation", {}).get("vpt_epsilon", 0.3))
 
-    seeds = list(range(42, 42 + args.runs))
+    seeds = list(range(args.seed_start, args.seed_start + args.runs))
     all_metrics = []
     all_histories = []
 

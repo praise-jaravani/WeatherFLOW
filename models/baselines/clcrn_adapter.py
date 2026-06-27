@@ -20,6 +20,20 @@ class CLCRNAdapter(BaseAdapter):
 
     def __init__(self):
         self.model: CLCRNModel | None = None
+        self._aux_device: torch.device | None = None
+
+    def _move_aux_tensors(self, device: torch.device) -> None:
+        # CLCRN's ConvAttrs/Seq2SeqAttrs store sparse_idx, local_graph_coor,
+        # geodesic, angle_ratio as plain attrs (not register_buffer), so
+        # nn.Module.to() skips them. Walk all submodules and move dense/sparse
+        # tensor attributes to device once.
+        if self._aux_device == device:
+            return
+        for module in self.model.modules():
+            for name, value in list(vars(module).items()):
+                if isinstance(value, torch.Tensor) and value.device != device:
+                    setattr(module, name, value.to(device))
+        self._aux_device = device
 
     def build_model(self, config: Dict[str, Any], graph: torch.Tensor) -> CLCRNModel:
         """
@@ -57,6 +71,7 @@ class CLCRNAdapter(BaseAdapter):
         Returns:
             (B, H, N, d)
         """
+        self._move_aux_tensors(x.device)
         return self.model(x)
 
     def predict(self, x: torch.Tensor, adj: torch.Tensor) -> torch.Tensor:
@@ -70,6 +85,7 @@ class CLCRNAdapter(BaseAdapter):
         Returns:
             (B, H, N, d)
         """
+        self._move_aux_tensors(x.device)
         self.model.eval()
         with torch.no_grad():
             return self.model(x)

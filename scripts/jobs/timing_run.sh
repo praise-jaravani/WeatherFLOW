@@ -25,6 +25,7 @@ SIF=/scratch/jrvpra001/weatherflow/container.sif
 CODE=/scratch/jrvpra001/weatherflow/WeatherFLOW
 
 RUN="singularity exec --nv \
+  --pwd /weatherflow \
   --bind ${CODE}:/weatherflow \
   --bind /scratch/jrvpra001:/scratch/jrvpra001 \
   ${SIF}"

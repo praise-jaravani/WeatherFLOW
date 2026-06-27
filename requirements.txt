@@ -13,10 +13,9 @@ torchvision>=0.16.0
 
 # --- Graph neural networks ---
 torch-geometric>=2.4.0
-# torch-scatter and torch-sparse are optional extensions for PyG (not required
-# for core functionality in PyG 2.4+). They must be installed AFTER torch
-# because they build C++ extensions against the installed torch. Install
-# manually if needed: pip install torch-scatter torch-sparse
+# torch-scatter is required by CLCRN (sphere.py). Install from PyG pre-built wheels.
+--find-links https://data.pyg.org/whl/torch-2.2.0+cu121.html
+torch-scatter
 
 # --- ODE solvers (MTGODE, ClimODE) ---
 torchdiffeq>=0.2.3

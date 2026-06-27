@@ -76,7 +76,7 @@ def _open_zipped_nc(path: Path) -> xr.Dataset:
             except FileNotFoundError:
                 pass
 
-    merged = xr.merge(datasets)
+    merged = xr.merge(datasets, compat="override")
     # Drop scalar/expver coords that differ between inner files
     for coord in list(merged.coords):
         if merged[coord].dims == () or coord in ("number", "expver"):
