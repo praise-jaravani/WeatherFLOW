@@ -1,10 +1,25 @@
 # WeatherFLOW HPC Status — Handoff Snapshot
 
-**Last updated:** 2026-06-25 08:35 SAST (Thursday morning)
+**Last updated:** 2026-06-28 13:30 SAST (Sunday afternoon)
+
+## Teammate model adapters built + smoke-tested (2026-06-28)
+
+While Phase 1 production runs, the 4 teammate-model adapter stubs were implemented in parallel and CPU-smoke-tested at N=100, 1 epoch on the `ada` partition:
+
+| Model | Owner | Status | Notes |
+|-------|-------|--------|-------|
+| STLGRU | Zoleka | ✅ smoke PASS | 13,382 params, ran 4 min CPU. VPT > 0 for several variables at smoke scale — possible publishable side-finding for Zoleka |
+| Lite-STGNN | Zoleka | ✅ smoke PASS | 6,869 params, ran 28 s CPU. VPT > 0 for 6 of 8 variables |
+| DiffSTG | Génevieve | ⏳ smoke pending retry | 3.3M params; first run failed because rsync dropped `denoising.py` in wrong subdir; fixed and resubmitted as job 964272 |
+| USTD | Génevieve | ⏳ smoke in progress | 174K params; **"USTD-spirit" reimplementation, NOT faithful upstream USTD** — see RESEARCH_FINDINGS.md USTD section for full caveat |
+
+**Production-ready when Phase 1 finishes:** STLGRU and Lite-STGNN. Per-model details and the production-launch caveats are in [specs/RESEARCH_FINDINGS.md](specs/RESEARCH_FINDINGS.md) under each model's section. DiffSTG and USTD ready pending smoke confirmation.
 
 ## ClimODE epochs cap lowered to 30 (2026-06-25)
 
-After both ClimODE seeds 42 and 43 timed out at epoch 37/40 under `epochs: 40` (24h SLURM wall hit before test eval), [experiments/configs/climode.yaml](experiments/configs/climode.yaml#L15) was lowered to `epochs: 30`. Justification, references (Goodfellow 2016, Gaibie 2024, Davidson & Moodley 2022, Ayers et al., MLCommons), and the paste-ready paper paragraph are in [specs/RESEARCH_FINDINGS.md](specs/RESEARCH_FINDINGS.md) under the ClimODE section. ClimODE seeds 42 and 43 have been added to the front of the watcher queue and are rerunning. **Phase 2 follow-up**: switching ClimODE to a fixed-step ODE solver could restore the full 40-epoch budget — captured in RESEARCH_FINDINGS.md and status_roadmap memory.
+## ClimODE epochs cap lowered to 30 (2026-06-25 — verified working)
+
+After both ClimODE seeds 42 and 43 timed out at epoch 37/40 under `epochs: 40` (24h SLURM wall hit before test eval), [experiments/configs/climode.yaml](experiments/configs/climode.yaml#L15) was lowered to `epochs: 30`. Both ClimODE seeds 42 and 43 reran successfully under the new config (18h40m and 19h01m). Justification, references (Goodfellow 2016, Gaibie 2024, Davidson & Moodley 2022, Ayers et al., MLCommons), and the paste-ready paper paragraph are in [specs/RESEARCH_FINDINGS.md](specs/RESEARCH_FINDINGS.md) under the ClimODE section. **Phase 2 follow-up**: switching ClimODE to a fixed-step ODE solver could restore the full 40-epoch budget — captured in RESEARCH_FINDINGS.md and status_roadmap memory.
 
 
 ## 🚨 Head-node policy incident (2026-06-24 11:12 SAST)

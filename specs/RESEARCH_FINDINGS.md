@@ -244,6 +244,124 @@ ClimODE uses adaptive `dopri5` ([experiments/configs/climode.yaml](experiments/c
 
 ---
 
+## STLGRU (Zoleka — lightweight)
+
+### Completed seeds at 999 nodes
+*(none yet — waiting on Phase 1 completion before submitting production seeds)*
+
+### CPU smoke test at N=100, 1 epoch (2026-06-28, job 964267) — PASS
+
+[outputs/stlgru_era5_regression_20260628_123524/run_42/](outputs/stlgru_era5_regression_20260628_123524/run_42)
+
+| Variable | MAE (physical units) | VPT (eps=0.3) |
+|----------|----------------------|---------------|
+| t2m (°C) | 1.78 | **2** |
+| d2m (°C) | 1.82 | **3** |
+| u10 (m/s) | 1.07 | 0 |
+| v10 (m/s) | 1.08 | 0 |
+| ws10 (m/s) | 0.87 | 0 |
+| sp (Pa) | 82 | **7** |
+| rh (%) | 7.03 | **1** |
+
+- Loss: train=0.366, val=0.324 in 1 epoch
+- Runtime: 4 min CPU at N=100
+- 13,382 trainable params (true lightweight)
+- All output files present (`test_metrics.json`, `per_station.npz`, `train.log`, `history.json`, `checkpoint.pt`, `summary.json`)
+- No NaN/inf in any per-station array
+- **VPT > 0 for several variables at smoke-scale** (unlike the production baselines which all show VPT=0 at 999 nodes × 30 epochs). Worth checking whether this persists at 999 nodes — would be a publishable side-finding for Zoleka.
+
+### Adapter implementation notes
+- Wraps `STLGRU/model.py::model` (single-channel upstream). Multi-variable handling: `out_length = horizon × n_vars`, then reshape to (B, H, N, d).
+- Upstream had a hardcoded `linap = nn.Linear(32, n_hid)` that only worked at `n_hid=64` — wrapper patches this post-construction to honour the configured hidden_dim.
+- Adjacency registered as a buffer on the wrapper (avoids CLCRN-style device-mismatch); `_apply` override re-binds the inner reference after any `.to()` call.
+
+### Production-ready (caveats)
+1. Use `--mem=256G` to match other production jobs (safe given known eval-time peak ~141 GB at 999 nodes)
+2. First seed should be submitted alone and watched to completion before letting the watcher drip-feed the rest
+3. GPU compatibility unverified beyond the local agent's design — the first 999-node GPU run is the real test
+
+---
+
+## Lite-STGNN (Zoleka — lightweight)
+
+### Completed seeds at 999 nodes
+*(none yet — waiting on Phase 1 completion before submitting production seeds)*
+
+### CPU smoke test at N=100, 1 epoch (2026-06-28, job 964268) — PASS
+
+[outputs/litestgnn_era5_regression_20260628_123523/run_42/](outputs/litestgnn_era5_regression_20260628_123523/run_42)
+
+| Variable | MAE (physical units) | VPT (eps=0.3) |
+|----------|----------------------|---------------|
+| t2m (°C) | 3.25 | **1** |
+| d2m (°C) | 2.07 | **3** |
+| u10 (m/s) | 1.16 | **1** |
+| v10 (m/s) | 1.18 | **1** |
+| ws10 (m/s) | 0.94 | 0 |
+| sp (Pa) | 135 | **2** |
+| rh (%) | 10.28 | **1** |
+
+- Loss: train=0.485, val=0.449 in 1 epoch
+- Runtime: 28 s CPU at N=100 (fastest of all 4 new adapters)
+- 6,869 trainable params (extremely lightweight — even smaller than STLGRU at this graph size)
+- All output files present
+- No NaN/inf in any per-station array
+- **VPT > 0 for 6 of 8 variables** at smoke-scale. Even more striking than STLGRU.
+
+### Adapter implementation notes
+- Wraps `Lite-STGNN/src/model.py::LiteSTGNN` (single-channel upstream).
+- Multi-variable handling: batched channel folding — `(B, T, N, d)` reshaped to `(B*d, T, N)`, run through upstream once, then reshaped back. All 8 variables share one learned low-rank adjacency, consistent with the model's parameter-efficiency thesis.
+- `adj_topk` clamped to `min(adj_topk, N-1)` so the model works at any N (upstream default of 10 would have crashed at small smoke-test N).
+- No device-mismatch fix needed — upstream constructs all device-aware tensors (`eye`, `arange`) inside `forward()` using the input tensor's device.
+
+### Production-ready (caveats)
+Same as STLGRU: `--mem=256G`, submit first seed alone, watch closely on first real 999-node GPU run.
+
+---
+
+## DiffSTG (Génevieve — diffusion)
+
+### Completed seeds at 999 nodes
+*(none yet — adapter built; CPU smoke test in flight; production deferred until Phase 1 completes AND Génevieve confirms she wants the fallback)*
+
+### Adapter implementation notes
+- Wraps `DiffSTG/algorithm/diffstg/ugnet.py::UGnet` (the denoising network ε_θ).
+- Required config attrs assembled into a `SimpleNamespace` with a `.get` shim for upstream's `config.get('n_blocks', 2)` pattern (avoids easydict dependency).
+- Upstream `UGnet` stored adjacencies `a1, a2` as plain attributes; adapter rebinds them as `register_buffer`s after construction to fix the CLCRN-style device bug.
+- Fleshed out `models/diffusion/modules/denoising.py` (was stub) with `linear_beta_schedule`, `cosine_beta_schedule`, `precompute_diffusion_params`, `q_sample`, `p_sample`, `full_denoising_chain`, `shortened_denoising_chain`, plus a `_gather` helper.
+- `forward()` runs a strided shortened denoising chain (10 steps) and returns the slice corresponding to the future T_p horizon, permuted to (B, H, N, d).
+- `predict()` runs the full 100-step DDPM chain.
+- 3.3M params at smoke-scale — by far the heaviest of all 8 models.
+
+### Compute warning
+- Local heavier smoke: 5 training steps with B=4 at N=100 took **133 seconds** on CPU (each step runs the 10-step shortened chain). Extrapolating to 999 nodes and a full epoch of ~2000 batches, **DiffSTG production at 999 nodes is likely 4–8 hours per epoch on GPU**. Plan accordingly.
+
+### USTD (Génevieve — diffusion)
+
+### Completed seeds at 999 nodes
+*(none yet — adapter built but with an important caveat below)*
+
+### ⚠️ Adapter is "USTD-spirit," NOT faithful upstream USTD
+
+The upstream `STDiffusionForeModel` requires:
+- A `side_info` dict (Laplacian PEs, temporal PEs, diffusion-step indices) bound to the upstream `Options` system
+- A separately-pre-trained `GWaveNetEncoder` checkpoint
+- A custom `set_input` / `optimize_parameters` lifecycle that doesn't match our trainer's `forward(x, adj) → pred` contract
+
+Wiring up the proper upstream USTD machinery was scoped at **4–6 hours of high-risk integration work** and deferred (see decision below). The current adapter implements a transformer-based denoiser with temporal self-attn + spatial self-attn + cross-attn to historical context, FiLM-modulated by sinusoidal diffusion-step embeddings. It matches USTD's architectural spirit but is a clean reimplementation, not the original paper's network.
+
+**Decision (2026-06-28):** Keep the "spirit" adapter as a safety net. If Génevieve wants to use it for the matrix, the paper would describe it as "our USTD-like denoising network" with a citation to the original USTD. If she wants the faithful upstream USTD, she's better-placed to wire it up herself (her domain knowledge + her thesis investment).
+
+### Adapter implementation notes (the "spirit" denoiser)
+- 174K params
+- Diffusion schedule (`betas`, `alphas`, `alpha_bars`, `posterior_variance`, etc.) registered as non-persistent buffers on a `_diffusion_schedule` submodule so they follow `.to(device)`.
+- `forward()` uses the closed-form `x_0 = (y_noisy - sqrt(1-ab) * pred_noise) / sqrt(ab)` recovery, sampling t uniformly. The trainer's MSE against true y drives the noise-prediction objective.
+- `predict()` runs the full T_diff-step deterministic reverse chain.
+- Local heavier smoke: 5 training steps in 3.9 s (much faster than DiffSTG since the network is much smaller).
+- Adapter does NOT depend on `models/diffusion/modules/denoising.py` — entire diffusion logic is inline to avoid race with the DiffSTG agent.
+
+---
+
 ## Open items (waiting for more data)
 
 - **Per-model variance across the 10 seeds** — currently have n=2 for AGCRN, n=2 for CLCRN, n=3 for MTGODE, n=2 for ClimODE
