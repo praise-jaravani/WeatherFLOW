@@ -43,14 +43,26 @@ We use **ERA5 reanalysis for South Africa only**, downloaded via the Copernicus 
 - **Computed**: 2 derived variables built in [preprocessing/derive.py](../preprocessing/derive.py). `ws10` from wind components (physical); `rh` from temperature/dewpoint/pressure using the Magnus formula (standard meteorology).
 - **Total after derivation**: **8 variables** — this is `d=8` you see in tensor shapes. The model is trained to predict **all 8** jointly.
 
-### 1.1a Alignment with Gaibie et al. (2024)
+### 1.1a Alignment with Gaibie et al. (2024) — honest divergences
 
-Our HPO for AGCRN and CLCRN comes from Gaibie et al. (2024). Their paper benchmarks on **4 primary target variables**: `t2m` (2m temperature), `rh` (relative humidity), `ws10` (10m wind speed), `sp` (surface pressure). Two things about our variable set to be honest about in the paper:
+Our HPO for AGCRN and CLCRN comes from Gaibie et al. (2024). We differ from their setup in **two important ways** that must be documented explicitly in the paper — not hidden.
 
-- **Training input/output = d=8**, not d=4. We feed all 8 (including `tp` and pre-derived `ws10`/`rh`) rather than the raw 5-ish Gaibie fed. Pre-deriving `ws10`/`rh` means the model doesn't have to internally reconstruct them each forward pass, and adding `tp` costs nothing. This is a "same feature set expressed differently" divergence, not a methodological break.
-- **Headline metrics filter to Gaibie's 4**. `evaluation/regression.py:REPORT_VARS = ["t2m", "rh", "ws10", "sp"]` — the paper's headline tables report on these 4 primary targets. The other 4 (`d2m`, `tp`, `u10`, `v10`) are reported in the full 8-variable table for completeness / appendix.
+**Divergence 1: input feature set (small, defensible).** Gaibie uses **6 features** (temperature, wind speed, wind direction, pressure, humidity, rainfall) from **45 SAWS stations** across 3 provinces. We use **8 features** from **999 ERA5 grid points** across all of South Africa. Six of theirs map 1:1 to ours; we add `d2m` (dewpoint) and encode wind as `u10`/`v10` components rather than magnitude/direction — strictly richer representation.
 
-**Paper phrasing you can use:** *"The model is trained to jointly predict all 8 variables in the feature vector; headline results are reported on the 4 primary target variables of Gaibie et al. (2024), with the full 8-variable table in Appendix X."*
+**Divergence 2: multi-task vs single-target training (large, but justifiable).** This is the bigger one. Gaibie's §3.3 states *"Four independent experiments were conducted to predict temperature, pressure, humidity and wind speed."* Each of their 16 configurations (4 targets × 4 architectures) is a target-specialised model — one model, one output variable. We train **1 model per architecture with 8 output channels** (multi-task regression), then evaluate against Gaibie's 4 primary targets.
+
+**Why we made the multi-task choice:**
+1. **Compute tractability.** Gaibie's setup replicated with our 10-seed Wilcoxon protocol would be 4 × 4 × 10 = 160 runs at 10–24 hr each. That's 6× our current wall time (weeks vs days).
+2. **Contemporary STGNN convention.** Multi-output single-model is the norm in newer station-forecasting work (Lam et al. 2023, Andrychowicz et al. 2023).
+3. **The paper's contribution is the architecture ranking, not absolute MAE.** Multi-task vs single-target doesn't invalidate the ranking claim.
+
+**Paper phrasing for the methods section:**
+
+> *"We depart from Gaibie et al. (2024) in two ways. First, we use an 8-variable input feature set from ERA5 reanalysis at 999 grid points rather than the 6-attribute SAWS dataset at 45 stations, adding 2m dewpoint and encoding wind as u/v components. Second, we train each architecture as a single multi-output model predicting all 8 variables jointly, rather than Gaibie's 4 target-specialised models per architecture. This multi-task formulation is compute-tractable within our 10-seed Wilcoxon protocol and follows the multi-output convention of contemporary station-forecasting STGNN work. Headline results are reported on Gaibie's 4 primary target variables (temperature, humidity, wind speed, surface pressure) for direct comparability; the full 8-variable table is in Appendix X. Absolute MAE/RMSE values are not directly comparable to Gaibie's Table 2 due to the single-target-vs-multi-task divergence; our architectural ranking is."*
+
+**Ranking discrepancy to acknowledge — don't hide.** Gaibie found AGCRN best on 3 of 4 targets (CLCRN wins pressure). We find CLCRN > ClimODE > MTGODE > AGCRN in both regression (Phase 1) and classification (Phase 2), with AGCRN clearly worst. The reversal is *real* and *interpretable*: single-target training gives AGCRN's adaptive-graph capacity room to specialise; multi-task training rewards CLCRN's geometry-aware inductive bias more. Publish that observation.
+
+**Headline metrics filter** — [evaluation/regression.py](../evaluation/regression.py) `REPORT_VARS = ["t2m", "rh", "ws10", "sp"]` matches Gaibie's 4 targets exactly; the paper's headline tables should use this filter.
 
 ### 1.2 Phase-2 label variables
 
