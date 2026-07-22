@@ -4,7 +4,9 @@ Single entry point for all WEATHER-FLOW experiments.
 Usage:
   python cli.py --model <name> --dataset <saws|era5|both> --task <regression|classification> [options]
 
-Available models: agcrn, clcrn, mtgode, climode, stlgru, litestgnn, diffstg, ustd
+Available models: agcrn, clcrn, mtgode, climode, stlgru, litestgnn
+(Diffusion models — DiffSTG, USTD — are maintained by Génevieve in her own
+forks; register their adapters here when she integrates them.)
 
 Optional flags:
   --runs N             Number of seeds to run (default 10, seeds 42–51)
@@ -37,8 +39,9 @@ ADAPTER_REGISTRY = {
     "climode":   "models.continuous_time.climode_adapter.ClimODEAdapter",
     "stlgru":    "models.lightweight.stlgru_adapter.STLGRUAdapter",
     "litestgnn": "models.lightweight.litestgnn_adapter.LiteSTGNNAdapter",
-    "diffstg":   "models.diffusion.diffstg_adapter.DiffSTGAdapter",
-    "ustd":      "models.diffusion.ustd_adapter.USTDAdapter",
+    # Diffusion adapters live in Génevieve's fork; add here when integrated:
+    #   "diffstg": "models.diffusion.diffstg_adapter.DiffSTGAdapter",
+    #   "ustd":    "models.diffusion.ustd_adapter.USTDAdapter",
 }
 
 console = Console()

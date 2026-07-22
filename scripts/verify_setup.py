@@ -37,8 +37,7 @@ REPO_CHECKS = [
     ("ClimODE",    PROJECT_ROOT / "models/continuous_time/ClimODE"),
     ("STLGRU",     PROJECT_ROOT / "models/lightweight/STLGRU"),
     ("Lite-STGNN", PROJECT_ROOT / "models/lightweight/Lite-STGNN"),
-    ("DiffSTG",    PROJECT_ROOT / "models/diffusion/DiffSTG"),
-    ("USTD",       PROJECT_ROOT / "models/diffusion/USTD"),
+    # Diffusion (DiffSTG, USTD) maintained in Génevieve's own forks — not checked here.
 ]
 
 # Modules that must import cleanly (adapters for unimplemented models
@@ -73,7 +72,7 @@ MODULE_CHECKS = [
 
 CONFIG_CHECKS = [
     PROJECT_ROOT / f"experiments/configs/{name}.yaml"
-    for name in ["agcrn", "clcrn", "mtgode", "climode", "stlgru", "litestgnn", "diffstg", "ustd"]
+    for name in ["agcrn", "clcrn", "mtgode", "climode", "stlgru", "litestgnn"]
 ]
 
 DIR_CHECKS = [
