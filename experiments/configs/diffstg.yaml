@@ -30,6 +30,10 @@ diffusion:
 data:
   input_len: 12           # T=12 matches Gaibie et al. (2024) HPO optimal for AGCRN; kept uniform across all models
   horizon: 12             # H: within Gaibie et al. (2024) tested horizons (3/6/9/12/24h)
+  # Phase 2 (classification) — ignored for regression runs
+  label_mode: per_variable          # 'per_variable' (§2.1) or 'any' (legacy)
+  label_variables: [t2m, d2m, tp, ws10, rh, sp]   # §2.4 default; u10/v10 excluded
+  decision_threshold: val_f1        # τ per (model, variable) selected on val by max-F1 (§4.3)
 
 evaluation:
   vpt_epsilon: 0.3        # NRMSE threshold for VPT (Platt et al. ~0.3; fraction of a std)

@@ -63,7 +63,7 @@ class TestLabels:
     def test_binary_values(self):
         from preprocessing.labels import label_all_splits
         train, val, test = self._make_splits()
-        y_tr, y_va, y_te, _ = label_all_splits(train, val, test, percentile=95.0)
+        y_tr, y_va, y_te, _, _ = label_all_splits(train, val, test, percentile=95.0)
         # All values must be 0 or 1
         for y in [y_tr, y_va, y_te]:
             assert set(np.unique(y)).issubset({0, 1})
@@ -75,7 +75,7 @@ class TestLabels:
         """
         from preprocessing.labels import label_all_splits
         train, val, test = self._make_splits()
-        y_tr, y_va, y_te, thresholds = label_all_splits(train, val, test, percentile=95.0)
+        y_tr, y_va, y_te, thresholds, _ = label_all_splits(train, val, test, percentile=95.0)
         # val and test are shifted +5σ above training mean — all should be extreme
         assert y_va.mean() > 0.5
         assert y_te.mean() > 0.5
@@ -86,7 +86,7 @@ class TestLabels:
         train = rng.standard_normal((10000, 5, 2)).astype(np.float32)
         val   = rng.standard_normal((2000, 5, 2)).astype(np.float32)
         test  = rng.standard_normal((2000, 5, 2)).astype(np.float32)
-        y_tr, _, _, _ = label_all_splits(train, val, test, percentile=95.0)
+        y_tr, _, _, _, _ = label_all_splits(train, val, test, percentile=95.0)
         rate = y_tr.mean()
         assert abs(rate - 0.05) < 0.02  # should be close to 5%
 
@@ -216,14 +216,27 @@ class TestDataset:
         assert y_sample.shape == (4, 8, 3)
 
     def test_output_shapes_classification(self):
+        """Per Phase-2 §2.1: default label_mode is 'per_variable' — labels
+        keep the variable axis. Legacy 'any' mode still available."""
         from preprocessing.dataset import STGNNDataset
         X, y = self._make_arrays(T=100, N=8, d=3)
         y_bin = (y > 0).astype(np.float32)
-        ds = STGNNDataset(X, y_bin, input_len=6, horizon=4, task="classification")
+        # Default per-variable mode returns (H, N, d_label)
+        ds = STGNNDataset(
+            X, y_bin, input_len=6, horizon=4, task="classification",
+            label_mode="per_variable", label_indices=[0, 1, 2],
+        )
         x_sample, y_sample = ds[0]
         assert x_sample.shape == (6, 8, 3)
-        # Classification collapses vars via max → (horizon, N)
-        assert y_sample.shape == (4, 8)
+        assert y_sample.shape == (4, 8, 3)
+
+        # Legacy 'any' mode still collapses to (H, N)
+        ds_any = STGNNDataset(
+            X, y_bin, input_len=6, horizon=4, task="classification",
+            label_mode="any", label_indices=[0, 1, 2],
+        )
+        _, y_any = ds_any[0]
+        assert y_any.shape == (4, 8)
 
     def test_sliding_window_length(self):
         from preprocessing.dataset import STGNNDataset

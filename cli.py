@@ -185,16 +185,45 @@ def _build_loss(task: str, train_loader, device: torch.device) -> torch.nn.Modul
     from training.losses import mse_loss, compute_class_weights, wbce_loss  # noqa: PLC0415
     if task == "regression":
         return mse_loss()
-    # Classification: derive class weights from training labels
-    all_labels = []
-    for _, y in train_loader:
-        all_labels.append(y.numpy())
-    train_labels = np.concatenate(all_labels, axis=0).ravel()
-    w_0, w_1 = compute_class_weights(train_labels)
-    console.print(
-        f"  Class weights: w_0={w_0:.3f}  w_1={w_1:.3f}  "
-        f"(pos rate={1/(1+w_1/w_0)*100:.1f}%)"
-    )
+
+    # Classification: derive per-variable class weights from training labels.
+    # Per Phase-2 plan §3.2 pos_weight is a vector of length d_label.
+    #
+    # Read positive rates from the underlying (T, N, d) int8 label tensor on
+    # the Dataset — the sliding-window loader would materialise a
+    # (samples, H, N, d) float32 array (~40 GB at N=999). numpy's .mean()
+    # promotes int8 to float64 internally without a full-array cast.
+    ds = train_loader.dataset
+    labels_full = ds.labels.numpy() if ds.labels is not None else None   # (T, N, d) int8
+    if labels_full is None:
+        raise RuntimeError("classification loader has no labels attached")
+    if ds.label_indices is not None:
+        labels_lab = labels_full[..., ds.label_indices.numpy()]
+    else:
+        labels_lab = labels_full
+    if getattr(ds, "label_mode", "per_variable") == "any":
+        labels_lab = labels_lab.max(axis=-1)                              # (T, N)
+    w_0, w_1 = compute_class_weights(labels_lab)
+    if np.ndim(w_1) == 0:
+        w_1_arr = np.atleast_1d(np.asarray(w_1, dtype=float))
+        pos_rate_pct = 100.0 / (1.0 + w_1_arr / float(w_0))
+        console.print(
+            f"  Class weights (scalar): w_0={float(w_0):.3f}  "
+            f"w_1={float(w_1):.3f}  (pos rate={pos_rate_pct[0]:.2f}%)"
+        )
+    else:
+        w_0_arr = np.asarray(w_0, dtype=float)
+        w_1_arr = np.asarray(w_1, dtype=float)
+        pos_rate_pct = 100.0 / (1.0 + w_1_arr / w_0_arr)
+        console.print(f"  Per-variable class weights (d_label={len(w_1_arr)}):")
+        var_names = None
+        try:
+            var_names = list(train_loader.dataset.label_indices.tolist())
+        except AttributeError:
+            var_names = None
+        for i, (w1_i, pr_i) in enumerate(zip(w_1_arr, pos_rate_pct)):
+            tag = f" [var-idx {var_names[i]}]" if var_names is not None else ""
+            console.print(f"    ch {i}{tag}: w_1={w1_i:.3f}  pos_rate={pr_i:.2f}%")
     return wbce_loss(w_0, w_1, device)
 
 
@@ -318,11 +347,15 @@ def _subsample_nodes(train_loader, val_loader, test_loader, adj, meta, max_nodes
     task       = config.get("task", "regression")
     batch_size = config["training"]["batch_size"]
 
+    data_cfg = config.get("data", {})
     new_train, new_val, new_test = build_dataloaders(
         X_tr, X_va, X_te,
         y_tr, y_va, y_te,
         input_len=input_len, horizon=horizon, task=task,
         batch_size=batch_size, num_workers=0,
+        label_mode=data_cfg.get("label_mode", "per_variable"),
+        var_names=new_meta.get("var_names"),
+        label_variables=data_cfg.get("label_variables", None),
     )
 
     return new_train, new_val, new_test, adj_sub, new_meta

@@ -1,6 +1,9 @@
 # Claude Code workspace state — machine-specific
 .claude/
 
+# Personal side project — not part of WeatherFLOW
+Side project... for my book/
+
 # Singularity container — several GB, lives on HPC only
 container.sif
 
@@ -58,3 +61,6 @@ Thumbs.db
 # SLURM logs (keep job scripts, ignore output logs)
 outputs/slurm_*.log
 outputs/slurm_*.err
+
+# Windows NTFS stream artifacts
+*:Zone.Identifier

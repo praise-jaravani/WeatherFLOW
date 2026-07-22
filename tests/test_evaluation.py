@@ -186,56 +186,70 @@ class TestRegressionMetrics:
 # ---------------------------------------------------------------------------
 
 class TestClassificationMetrics:
+    """
+    Phase-2 classification is per-variable multi-label. `compute_all` now
+    takes probabilities of shape (samples, H, N, d_label) and returns a nested
+    dict with `per_variable`, `macro`, `taus`, `per_station`.
 
-    def _make_binary(self, S=50, H=4, N=10):
+    See tests/test_phase2_classification.py for the full contract; this class
+    only covers legacy per-metric sanity cases carried over from Phase 1.
+    """
+
+    def _make_binary(self, S=50, H=4, N=10, D=2):
         rng = np.random.default_rng(42)
-        preds   = rng.standard_normal((S, H, N)).astype(np.float32)
-        targets = rng.integers(0, 2, (S, H, N)).astype(np.float32)
-        return preds, targets
+        probs   = rng.random((S, H, N, D)).astype(np.float32)   # in [0,1]
+        targets = rng.integers(0, 2, (S, H, N, D)).astype(np.float32)
+        return probs, targets
 
     def test_compute_all_keys(self):
         from evaluation.classification import compute_all
         p, t = self._make_binary()
-        result = compute_all(p, t)
-        for key in ["f1", "recall", "precision", "auc_roc"]:
+        result = compute_all(p, t, var_names=["a", "b"])
+        # Top-level keys
+        for key in ["per_variable", "macro", "taus", "label_variables", "per_station"]:
             assert key in result, f"Missing key: {key}"
+        # Macro contains the per-metric mean across variables
+        for key in ["f1", "recall", "precision", "auc_roc"]:
+            assert key in result["macro"], f"Missing macro.{key}"
 
     def test_perfect_precision_recall(self):
         from evaluation.classification import compute_all
-        S, H, N = 50, 4, 5
+        S, H, N, D = 50, 4, 5, 2
         rng = np.random.default_rng(0)
-        targets = rng.integers(0, 2, (S, H, N)).astype(np.float32)
-        # logits: large positive if target=1, large negative if target=0
-        preds = (targets * 2 - 1) * 100.0
-        result = compute_all(preds, targets)
-        np.testing.assert_allclose(result["f1"],        1.0, atol=1e-4)
-        np.testing.assert_allclose(result["recall"],    1.0, atol=1e-4)
-        np.testing.assert_allclose(result["precision"], 1.0, atol=1e-4)
+        targets = rng.integers(0, 2, (S, H, N, D)).astype(np.float32)
+        # Perfectly separated probabilities per variable
+        probs = np.where(targets == 1, 0.99, 0.01).astype(np.float32)
+        result = compute_all(probs, targets, var_names=["a", "b"])
+        np.testing.assert_allclose(result["macro"]["f1"],        1.0, atol=1e-4)
+        np.testing.assert_allclose(result["macro"]["recall"],    1.0, atol=1e-4)
+        np.testing.assert_allclose(result["macro"]["precision"], 1.0, atol=1e-4)
 
     def test_auc_roc_random_is_near_half(self):
         from evaluation.classification import compute_all
         rng = np.random.default_rng(7)
-        S, H, N = 200, 4, 10
-        preds   = rng.standard_normal((S, H, N)).astype(np.float32)
-        targets = rng.integers(0, 2, (S, H, N)).astype(np.float32)
-        result  = compute_all(preds, targets)
-        # Random classifier → AUC ≈ 0.5 (with tolerance for small sample)
-        assert 0.3 < result["auc_roc"] < 0.7
+        S, H, N, D = 200, 4, 10, 2
+        probs   = rng.random((S, H, N, D)).astype(np.float32)
+        targets = rng.integers(0, 2, (S, H, N, D)).astype(np.float32)
+        result  = compute_all(probs, targets, var_names=["a", "b"])
+        # Random classifier → macro AUC ≈ 0.5 (with tolerance for small sample)
+        assert 0.3 < result["macro"]["auc_roc"] < 0.7
 
     def test_values_bounded(self):
         from evaluation.classification import compute_all
         p, t = self._make_binary()
-        result = compute_all(p, t)
+        result = compute_all(p, t, var_names=["a", "b"])
         for key in ["f1", "recall", "precision"]:
-            assert 0.0 <= result[key] <= 1.0
-        assert 0.0 <= result["auc_roc"] <= 1.0
+            assert 0.0 <= result["macro"][key] <= 1.0
+        assert 0.0 <= result["macro"]["auc_roc"] <= 1.0
 
     def test_confusion_matrix_shape(self):
         from evaluation.classification import compute_all
-        p, t = self._make_binary(S=30, H=2, N=5)
-        result = compute_all(p, t)
-        # All required scalars present
-        assert all(isinstance(result[k], float) for k in ["f1", "recall", "precision"])
+        p, t = self._make_binary(S=30, H=2, N=5, D=2)
+        result = compute_all(p, t, var_names=["a", "b"])
+        for v in ("a", "b"):
+            assert isinstance(result["per_variable"][v]["tp"], int)
+            assert all(isinstance(result["per_variable"][v][k], (int, float))
+                       for k in ["f1", "recall", "precision", "csi"])
 
 
 # ---------------------------------------------------------------------------

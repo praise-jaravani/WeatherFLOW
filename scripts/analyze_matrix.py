@@ -43,6 +43,13 @@ RUN_DIR_RE = re.compile(
     r"(?P<model>agcrn|clcrn|mtgode|climode)_era5_regression_(?P<ts>\d{8})_(?P<hms>\d{6})"
 )
 
+RUN_DIR_RE_CLASSIFICATION = re.compile(
+    r"(?P<model>agcrn|clcrn|mtgode|climode)_era5_classification_(?P<ts>\d{8})_(?P<hms>\d{6})"
+)
+
+# Phase-2 metric set (see evaluation/classification.py). See §4 of the plan.
+CLASSIFICATION_METRICS = ["f1", "precision", "recall", "csi", "auc_roc", "pr_auc", "accuracy"]
+
 
 # --------------------------------------------------------------------------- #
 # Discovery
@@ -338,6 +345,245 @@ def write_summary_md(runs: pd.DataFrame, summary: pd.DataFrame, wilcoxon: pd.Dat
 
 
 # --------------------------------------------------------------------------- #
+# Phase 2 — classification path
+# --------------------------------------------------------------------------- #
+
+def discover_runs_classification(outputs_dir: Path, since: str) -> pd.DataFrame:
+    """Same schema as `discover_runs` but scans classification directories."""
+    rows = []
+    for run_dir in outputs_dir.glob("*_era5_classification_*"):
+        m = RUN_DIR_RE_CLASSIFICATION.match(run_dir.name)
+        if not m:
+            continue
+        date = m.group("ts")
+        if date < since.replace("-", ""):
+            continue
+        for seed_dir in run_dir.glob("run_*"):
+            metrics_path = seed_dir / "test_metrics.json"
+            if not metrics_path.exists():
+                continue
+            seed_match = re.match(r"run_(\d+)", seed_dir.name)
+            if not seed_match:
+                continue
+            rows.append({
+                "model": m.group("model"),
+                "seed": int(seed_match.group(1)),
+                "ts": f"{m.group('ts')}_{m.group('hms')}",
+                "path": seed_dir,
+            })
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    df = df.sort_values("ts").drop_duplicates(subset=["model", "seed"], keep="last")
+    return df.reset_index(drop=True)
+
+
+def load_metrics_classification(runs: pd.DataFrame) -> pd.DataFrame:
+    """
+    Long-format DataFrame: [model, seed, variable, metric, value] for
+    per-variable classification runs. Also emits a "macro" pseudo-variable.
+    """
+    rows = []
+    for _, r in runs.iterrows():
+        m = json.loads((r["path"] / "test_metrics.json").read_text())
+        per_variable = m.get("per_variable", {})
+        for var, mv in per_variable.items():
+            row = {"model": r["model"], "seed": r["seed"], "variable": var}
+            for k in CLASSIFICATION_METRICS + ["tau"]:
+                if k in mv:
+                    row[k] = mv[k]
+            rows.append(row)
+        # macro row for cross-model comparison
+        macro = m.get("macro", {})
+        if macro:
+            row = {"model": r["model"], "seed": r["seed"], "variable": "macro"}
+            for k in CLASSIFICATION_METRICS:
+                if k in macro:
+                    row[k] = macro[k]
+            rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def summary_table_classification(metrics: pd.DataFrame, metric: str = "f1") -> pd.DataFrame:
+    grouped = metrics.groupby(["model", "variable"])[metric].agg(["mean", "std", "count"])
+    return grouped.reset_index()
+
+
+def wilcoxon_pairs_classification(
+    metrics: pd.DataFrame, metric: str = "f1"
+) -> pd.DataFrame:
+    """
+    Pairwise Wilcoxon signed-rank on per-seed values of `metric`, per variable
+    (incl. "macro"). Higher is better for classification metrics.
+    """
+    rows = []
+    for var in metrics["variable"].unique():
+        sub = metrics[metrics["variable"] == var]
+        models = sorted(sub["model"].unique())
+        seed_lookup = {mo: sub[sub["model"] == mo].set_index("seed")[metric] for mo in models}
+        for i, a in enumerate(models):
+            for b in models[i + 1:]:
+                common = seed_lookup[a].index.intersection(seed_lookup[b].index)
+                if len(common) < 3:
+                    p = np.nan
+                    stat = np.nan
+                else:
+                    x = seed_lookup[a].loc[common].values
+                    y = seed_lookup[b].loc[common].values
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        try:
+                            stat, p = stats.wilcoxon(x, y, zero_method="wilcox")
+                        except ValueError:
+                            stat, p = np.nan, np.nan
+                rows.append({
+                    "variable": var,
+                    "model_a": a,
+                    "model_b": b,
+                    "n": len(common),
+                    "wilcoxon_stat": stat,
+                    "p_value": p,
+                })
+    return pd.DataFrame(rows)
+
+
+def plot_f1_heatmap(summary: pd.DataFrame, fig_dir: Path) -> None:
+    """Model × variable heatmap of mean F1 across seeds (higher is better)."""
+    piv = summary.pivot(index="model", columns="variable", values="mean")
+    piv = piv.reindex(index=[m for m in MODEL_ORDER if m in piv.index])
+    vars_first = [c for c in piv.columns if c != "macro"] + (["macro"] if "macro" in piv.columns else [])
+    piv = piv[vars_first]
+    fig, ax = plt.subplots(figsize=(max(6, 0.9 * piv.shape[1]), max(3, 0.6 * len(piv) + 2)))
+    sns.heatmap(piv, annot=True, fmt=".3f", cmap="Greens", ax=ax,
+                cbar_kws={"label": "F1"})
+    ax.set_title("Phase 2 — Mean F1 per (model, label variable)")
+    plt.tight_layout()
+    out = fig_dir / "phase2_f1_heatmap.png"
+    fig.savefig(out, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  wrote {out}")
+
+
+def plot_classification_variance(metrics: pd.DataFrame, fig_dir: Path) -> None:
+    g = sns.catplot(
+        data=metrics, x="model", y="f1", col="variable",
+        col_wrap=4, kind="box", height=2.6, aspect=1.1,
+        order=[m for m in MODEL_ORDER if m in metrics["model"].unique()],
+        sharey=False,
+    )
+    g.set_titles("{col_name}")
+    g.set_xticklabels(rotation=20)
+    out = fig_dir / "phase2_f1_variance_box.png"
+    g.savefig(out, dpi=140, bbox_inches="tight")
+    plt.close(g.fig)
+    print(f"  wrote {out}")
+
+
+def plot_classification_geographic(
+    runs: pd.DataFrame, fig_dir: Path, coords: np.ndarray, var: str, var_idx: int
+) -> None:
+    """Per-station F1 map per model, averaged across seeds."""
+    by_model = defaultdict(list)
+    for _, r in runs.iterrows():
+        npz_path = r["path"] / "per_station.npz"
+        if not npz_path.exists():
+            continue
+        ps = np.load(npz_path)
+        if "f1" not in ps:
+            continue
+        arr = ps["f1"]
+        if arr.ndim != 2 or var_idx >= arr.shape[1]:
+            continue
+        by_model[r["model"]].append(arr[:, var_idx])
+    if not by_model:
+        return
+
+    models = [mo for mo in MODEL_ORDER if mo in by_model]
+    n = len(models)
+    fig, axes = plt.subplots(1, n, figsize=(4 * n, 4.5), squeeze=False)
+    stacked = [np.stack(by_model[mo]) for mo in models]
+    means = [np.nanmean(s, axis=0) for s in stacked]
+    vmin = float(np.nanmin([np.nanmin(m) for m in means]))
+    vmax = float(np.nanmax([np.nanmax(m) for m in means]))
+    for i, (mo, mean_arr) in enumerate(zip(models, means)):
+        ax = axes[0][i]
+        sc = ax.scatter(coords[:, 1], coords[:, 0], c=mean_arr, s=18,
+                        vmin=vmin, vmax=vmax, cmap="Greens")
+        ax.set_title(f"{mo}  (n={len(by_model[mo])} seeds)")
+        ax.set_xlabel("lon")
+        ax.set_ylabel("lat")
+        ax.set_xlim(14, 34)
+        ax.set_ylim(-36, -21)
+        ax.set_aspect("equal")
+    fig.colorbar(sc, ax=axes[0], shrink=0.7, label=f"F1 ({var})")
+    fig.suptitle(f"Per-station F1 — variable: {var}", fontsize=12)
+    out = fig_dir / f"phase2_geographic_{var}.png"
+    fig.savefig(out, dpi=140, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  wrote {out}")
+
+
+def write_summary_md_classification(
+    runs: pd.DataFrame, summary: pd.DataFrame, wlc: pd.DataFrame, fig_dir: Path,
+) -> None:
+    md = ["# WeatherFLOW Phase 2 — classification analysis", ""]
+    counts = runs.groupby("model")["seed"].count()
+    md.append("## Seed counts")
+    md.append("")
+    md.append("| model | n_seeds |")
+    md.append("|-------|---------|")
+    for m in MODEL_ORDER:
+        md.append(f"| {m} | {counts.get(m, 0)} |")
+    md.append("")
+
+    md.append("## Mean F1 per (model, label variable) — mean ± std across seeds")
+    md.append("")
+    piv_mean = summary.pivot(index="model", columns="variable", values="mean")
+    piv_std  = summary.pivot(index="model", columns="variable", values="std")
+    cols = [c for c in piv_mean.columns if c != "macro"] + (["macro"] if "macro" in piv_mean.columns else [])
+    md.append("| model | " + " | ".join(cols) + " |")
+    md.append("|" + "---|" * (len(cols) + 1))
+    for m in MODEL_ORDER:
+        if m not in piv_mean.index:
+            continue
+        cells = []
+        for v in cols:
+            mu = piv_mean.loc[m, v]
+            sd = piv_std.loc[m, v]
+            if pd.isna(sd):
+                cells.append(f"{mu:.3g}")
+            else:
+                cells.append(f"{mu:.3g} ± {sd:.2g}")
+        md.append(f"| {m} | " + " | ".join(cells) + " |")
+    md.append("")
+
+    md.append("## Pairwise Wilcoxon on macro-F1 across seeds (higher is better)")
+    md.append("")
+    if wlc.empty:
+        md.append("_(no pair reached n>=3 seeds; Wilcoxon skipped)_")
+    else:
+        usable = wlc[wlc["p_value"].notna()]
+        if not usable.empty:
+            md.append("| variable | model_a | model_b | n | p |")
+            md.append("|----------|---------|---------|---|---|")
+            for _, w in usable.sort_values(["variable", "p_value"]).iterrows():
+                star = " **" if w["p_value"] < 0.05 else ""
+                md.append(f"| {w['variable']} | {w['model_a']} | {w['model_b']} | {w['n']} | {w['p_value']:.3g}{star} |")
+    md.append("")
+
+    md.append("## Figures")
+    md.append("")
+    for f in sorted(fig_dir.glob("phase2_*.png")):
+        md.append(f"- ![{f.name}]({f.name})")
+    md.append("")
+    md.append(f"Generated from {len(runs)} classification run directories.")
+
+    out = fig_dir / "SUMMARY_phase2.md"
+    out.write_text("\n".join(md) + "\n")
+    print(f"  wrote {out}")
+
+
+# --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
 
@@ -358,9 +604,48 @@ def main() -> int:
 
     print(f"Discovering runs in {args.outputs} (since {args.since})...")
     runs = discover_runs(args.outputs, args.since)
-    if runs.empty:
+    runs_cls = discover_runs_classification(args.outputs, args.since)
+
+    if runs.empty and runs_cls.empty:
         print("No completed runs found.")
         return 1
+
+    if not runs_cls.empty:
+        print(f"Found {len(runs_cls)} classification runs:")
+        for m, n in runs_cls.groupby("model")["seed"].count().items():
+            print(f"  {m}: {n} seed(s)")
+
+        cls_metrics = load_metrics_classification(runs_cls)
+        cls_summary = summary_table_classification(cls_metrics, metric="f1")
+        print("\nPhase 2 F1 summary:")
+        print(cls_summary.to_string(index=False))
+
+        # Wilcoxon on macro F1 only (headline).
+        macro_only = cls_metrics[cls_metrics["variable"] == "macro"]
+        cls_wlc = wilcoxon_pairs_classification(macro_only, metric="f1")
+        if not cls_wlc.empty:
+            usable = cls_wlc[cls_wlc["p_value"].notna()]
+            if not usable.empty:
+                print("\nPhase 2 macro-F1 Wilcoxon:")
+                print(usable.to_string(index=False))
+
+        print("\nWriting Phase 2 figures...")
+        plot_f1_heatmap(cls_summary, args.figures)
+        plot_classification_variance(cls_metrics, args.figures)
+        if args.coords.exists():
+            coords = np.load(args.coords)
+            # Use whatever label variables appear in the first run
+            label_vars_seen = list(cls_metrics[cls_metrics["variable"] != "macro"]["variable"].unique())
+            for i, v in enumerate(label_vars_seen[:4]):
+                plot_classification_geographic(runs_cls, args.figures, coords, v, i)
+
+        write_summary_md_classification(runs_cls, cls_summary, cls_wlc, args.figures)
+
+    if runs.empty:
+        # No regression runs to summarise (Phase 2 only).
+        print("\nDone (classification only).")
+        return 0
+
     print(f"Found {len(runs)} completed runs:")
     for m, n in runs.groupby("model")["seed"].count().items():
         print(f"  {m}: {n} seed(s)")

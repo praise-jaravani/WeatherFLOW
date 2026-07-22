@@ -96,6 +96,23 @@ class Trainer:
         self.var_names = var_names
         self.vpt_epsilon = vpt_epsilon
 
+        # Phase 2: label variable names (subset of var_names). Falls back to
+        # var_names if not set — appropriate for regression and for the legacy
+        # all-8 label case.
+        self.label_variables = config.get("data", {}).get("label_variables") or var_names
+        # Index tensor for subsetting model output channels to label channels.
+        # Model outputs (B, H, N, n_vars); labels are (B, H, N, d_label). We
+        # subset the pred's trailing axis to line the two up. When
+        # label_variables == var_names this is a no-op mask.
+        if var_names is not None and self.label_variables is not None:
+            try:
+                _idx = [var_names.index(v) for v in self.label_variables]
+                self._label_idx = torch.tensor(_idx, dtype=torch.long)
+            except ValueError:
+                self._label_idx = None
+        else:
+            self._label_idx = None
+
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.adj = adj.to(self.device)
 
@@ -214,6 +231,7 @@ class Trainer:
             # BCEWithLogitsLoss expects float targets; classification y is int8
             if self.task == "classification":
                 y = y.float()
+                pred = self._subset_pred_to_label_channels(pred)
 
             loss = self.loss_fn(pred, y)
             loss.backward()
@@ -239,6 +257,7 @@ class Trainer:
 
             if self.task == "classification":
                 y = y.float()
+                pred = self._subset_pred_to_label_channels(pred)
 
             loss = self.loss_fn(pred, y)
             total_loss += loss.item()
@@ -260,12 +279,46 @@ class Trainer:
         out_path = self.output_dir / "per_station.npz"
         np.savez(str(out_path), **{k: v for k, v in per_station.items() if isinstance(v, np.ndarray)})
 
+    def _subset_pred_to_label_channels(self, pred: torch.Tensor) -> torch.Tensor:
+        """
+        Subset a (B, H, N, n_vars) tensor to (B, H, N, d_label) via the
+        `_label_idx` computed once at construction. No-op when the subset is
+        the full var set. Trailing-axis-only.
+        """
+        if self._label_idx is None or pred.dim() != 4:
+            return pred
+        idx = self._label_idx.to(pred.device)
+        if idx.shape[0] == pred.shape[-1] and torch.equal(idx, torch.arange(pred.shape[-1], device=pred.device)):
+            return pred
+        return pred.index_select(-1, idx)
+
+    def _collect_val_predictions(self) -> tuple:
+        """
+        Run the loaded checkpoint over the validation set and return
+        (val_probs, val_targets) as numpy arrays. Used only by classification —
+        Phase-2 plan §4.3 requires validation-selected decision thresholds.
+        Adapters return LOGITS (per §3.1 no adapter changes); the sigmoid is
+        applied here in the trainer.
+        """
+        val_probs, val_targets = [], []
+        for x, y in self.val_loader:
+            x = x.to(self.device)
+            logits = self.adapter.predict(x, self.adj)
+            logits = self._subset_pred_to_label_channels(logits)
+            val_probs.append(torch.sigmoid(logits).cpu().numpy())
+            val_targets.append(y.numpy())
+        return np.concatenate(val_probs, axis=0), np.concatenate(val_targets, axis=0)
+
     def _evaluate_test(self) -> Dict[str, Any]:
         """Load best checkpoint and evaluate on the test set."""
         # TODO(perf): stream test eval. At 999 nodes the accumulated all_preds +
         # all_targets reach ~35 GB peak (45K samples × 12H × 999N × 8d × 4B × 2),
         # forcing --mem=128G. Refactor to compute metrics chunk-by-chunk so we
         # never hold the full test prediction set in RAM. See specs/ for context.
+        import resource
+        def _rss_gib():
+            return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 * 1024)
+        print(f"[mem] {_rss_gib():.2f} GiB entering _evaluate_test", flush=True)
         if self.checkpoint_path.exists():
             state = torch.load(
                 self.checkpoint_path, map_location=self.device, weights_only=True
@@ -277,11 +330,21 @@ class Trainer:
         for x, y in self.test_loader:
             x = x.to(self.device)
             pred = self.adapter.predict(x, self.adj)
+            # Classification: adapters return LOGITS; subset to label channels
+            # and sigmoid here (§3.1).
+            if self.task == "classification":
+                pred = self._subset_pred_to_label_channels(pred)
+                pred = torch.sigmoid(pred)
             all_preds.append(pred.cpu().numpy())
             all_targets.append(y.numpy())
 
         preds = np.concatenate(all_preds, axis=0)    # (samples, H, N, d or no d)
         targets = np.concatenate(all_targets, axis=0)
+        # Free the intermediate list of chunks now that the concatenated
+        # arrays own the data. Each chunk list held ~13 GB at N=999.
+        del all_preds, all_targets
+        print(f"[mem] {_rss_gib():.2f} GiB after test preds+targets concat  "
+              f"(preds={preds.nbytes/1e9:.1f}GB targets={targets.nbytes/1e9:.1f}GB)", flush=True)
 
         if self.task == "regression":
             mask = self._build_extreme_mask(targets)
@@ -296,7 +359,24 @@ class Trainer:
             per_station = metrics.pop("per_station")
             self._save_per_station(per_station)
         else:
-            metrics = classification.compute_all(preds, targets)
+            # Phase-2 plan §4.3: decision thresholds selected on the VALIDATION
+            # split by max-F1, per label variable. Never on 0.5, never on test.
+            val_preds, val_targets = self._collect_val_predictions()
+            label_vars = self.label_variables or [f"var{i}" for i in range(val_preds.shape[-1])]
+            taus = classification.select_thresholds(val_preds, val_targets, label_vars)
+            # Release the validation accumulators (~26 GB at N=999) before
+            # compute_all — they're no longer needed once taus is chosen and
+            # they'd otherwise sit alive alongside test preds/targets for the
+            # duration of compute_all, pushing peak RSS toward the 96G limit.
+            print(f"[mem] {_rss_gib():.2f} GiB after collect_val + select_thresholds", flush=True)
+            del val_preds, val_targets
+            metrics = classification.compute_all(
+                preds, targets, var_names=label_vars, taus=taus,
+            )
+            print(f"[mem] {_rss_gib():.2f} GiB after compute_all", flush=True)
+            per_station = metrics.pop("per_station")
+            # per_station comes back as a dict of (N, d_label) arrays; save as npz.
+            self._save_per_station(per_station)
 
         # Inference time (measured after best checkpoint loaded)
         infer = record_inference_time(

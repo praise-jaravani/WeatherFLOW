@@ -153,13 +153,13 @@ class TestLabelD8:
     def test_threshold_shape(self, splits):
         from preprocessing.labels import label_all_splits
         tr, va, te = splits
-        _, _, _, thresholds = label_all_splits(tr, va, te)
+        _, _, _, thresholds, _ = label_all_splits(tr, va, te)
         assert thresholds.shape == (N, D_DERIVED)
 
     def test_label_shapes(self, splits):
         from preprocessing.labels import label_all_splits
         tr, va, te = splits
-        y_tr, y_va, y_te, _ = label_all_splits(tr, va, te)
+        y_tr, y_va, y_te, _, _ = label_all_splits(tr, va, te)
         assert y_tr.shape == (len(tr), N, D_DERIVED)
         assert y_va.shape == (len(va), N, D_DERIVED)
         assert y_te.shape == (len(te), N, D_DERIVED)
@@ -167,7 +167,7 @@ class TestLabelD8:
     def test_labels_binary(self, splits):
         from preprocessing.labels import label_all_splits
         tr, va, te = splits
-        y_tr, y_va, y_te, _ = label_all_splits(tr, va, te)
+        y_tr, y_va, y_te, _, _ = label_all_splits(tr, va, te)
         for name, y in [("train", y_tr), ("val", y_va), ("test", y_te)]:
             assert set(np.unique(y)).issubset({0, 1}), f"Non-binary labels in {name}"
 
@@ -193,7 +193,7 @@ class TestLabelD8:
         """Thresholds must match those computed from train subset only."""
         from preprocessing.labels import label_all_splits, compute_thresholds
         tr, va, te = splits
-        _, _, _, thresholds = label_all_splits(tr, va, te)
+        _, _, _, thresholds, _ = label_all_splits(tr, va, te)
         expected = compute_thresholds(tr)
         np.testing.assert_array_equal(thresholds, expected)
 
@@ -269,19 +269,32 @@ class TestDatasetD8:
         assert xb.shape == (4, INPUT_LEN, N, D_DERIVED)
         assert yb.shape == (4, HORIZON,   N, D_DERIVED)
 
-    def test_classification_label_collapses_vars(self, normalised):
-        """With d=8, classification labels collapse all vars → (B, H, N)."""
+    def test_classification_label_shape(self, normalised):
+        """Per Phase-2 §2.1: default per_variable labels keep the variable
+        axis → (B, H, N, d_label). Legacy 'any' collapses via max → (B, H, N)."""
         from preprocessing.dataset import STGNNDataset
         from preprocessing.labels import apply_labels, compute_thresholds
         from torch.utils.data import DataLoader
         tr_n, _, _ = normalised
         thresh = compute_thresholds(tr_n)
         y_int8 = apply_labels(tr_n, thresh)
-        ds = STGNNDataset(tr_n, y_int8, INPUT_LEN, HORIZON, "classification")
+        label_indices = list(range(D_DERIVED))
+
+        ds = STGNNDataset(
+            tr_n, y_int8, INPUT_LEN, HORIZON, "classification",
+            label_mode="per_variable", label_indices=label_indices,
+        )
         loader = DataLoader(ds, batch_size=4, shuffle=False)
         xb, yb = next(iter(loader))
         assert xb.shape == (4, INPUT_LEN, N, D_DERIVED)
-        assert yb.shape == (4, HORIZON,   N)   # d collapsed by max
+        assert yb.shape == (4, HORIZON, N, D_DERIVED)
+
+        ds_any = STGNNDataset(
+            tr_n, y_int8, INPUT_LEN, HORIZON, "classification",
+            label_mode="any", label_indices=label_indices,
+        )
+        _, yb_any = next(iter(DataLoader(ds_any, batch_size=4, shuffle=False)))
+        assert yb_any.shape == (4, HORIZON, N)
 
     def test_no_nan_in_loader(self, normalised):
         from preprocessing.dataset import STGNNDataset
@@ -406,7 +419,9 @@ class TestFullPipeline:
         assert "rh"   not in meta["var_names"]
 
     def test_classification_pipeline_label_shape(self):
-        """Classification task: y batches must be (B, H, N) with d=8 input."""
+        """Per Phase-2 §2.1: default classification labels keep the variable
+        axis → (B, H, N, d_label). d_label defaults to len(var_names) when
+        `data.label_variables` is unset."""
         from preprocessing.pipeline import run_pipeline
         cfg = _pipeline_config(derive=True, batch_size=4)
         cfg["task"] = "classification"
@@ -418,8 +433,8 @@ class TestFullPipeline:
         train_loader, *_ = result
         xb, yb = next(iter(train_loader))
         assert xb.shape[-1] == D_DERIVED          # x still carries 8 vars
-        assert len(yb.shape) == 3                 # (B, H, N) — no var dimension
-        assert yb.shape == torch.Size([4, HORIZON, N])
+        assert yb.ndim == 4                       # (B, H, N, d_label)
+        assert yb.shape == torch.Size([4, HORIZON, N, D_DERIVED])
 
 
 # ─── cache hash invalidation ───────────────────────────────────────────────────

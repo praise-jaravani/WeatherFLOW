@@ -15,7 +15,7 @@ model:
 training:
   learning_rate: 0.001    # within Gaibie et al. (2024) CLCRN search range (0.0003, 0.003)
   batch_size: 32          # within Gaibie et al. (2024) CLCRN search range [32, 64, 125]
-  epochs: 100
+  epochs: 60             # capped from 100 to fit 24h HPC wall time; successful seeds early-stop at ep 45 anyway (best val at ep 30, patience 15). Seed 44 (2026-07-14) hit 24h wall running to ~62 epochs, forcing this cap.
   early_stopping_patience: 15
   gradient_clip_max_norm: 5.0
   scheduler:
@@ -27,6 +27,10 @@ training:
 data:
   input_len: 12           # T=12 for benchmark uniformity; Gaibie et al. (2024) used T∈{48,72,168}h for CLCRN
   horizon: 12             # H: within Gaibie et al. (2024) tested horizons (3/6/9/12/24h)
+  # Phase 2 (classification) — ignored for regression runs
+  label_mode: per_variable          # 'per_variable' (§2.1) or 'any' (legacy)
+  label_variables: [t2m, d2m, tp, ws10, rh, sp]   # §2.4 default; u10/v10 excluded
+  decision_threshold: val_f1        # τ per (model, variable) selected on val by max-F1 (§4.3)
 
 evaluation:
   vpt_epsilon: 0.3        # NRMSE threshold for VPT (Platt et al. ~0.3; fraction of a std)

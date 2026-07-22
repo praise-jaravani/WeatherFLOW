@@ -22,9 +22,16 @@ all months currently on disk without rebuilding.
 import hashlib
 import json
 import logging
+import os
+import resource
 import numpy as np
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+
+
+def _rss_gib() -> float:
+    """Resident-set size in GiB. Linux ru_maxrss is in KiB."""
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024 * 1024)
 
 from torch.utils.data import DataLoader
 
@@ -133,6 +140,11 @@ def load_cache(dataset: str) -> Dict[str, Any]:
     result = {k: np.load(str(v)) for k, v in paths.items() if v.suffix == ".npy"}
     with open(paths["meta"]) as f:
         result["meta"] = json.load(f)
+    # tp_wet_trigger is Phase-2; older caches don't have it. Load if present.
+    prefix = CACHE_DIR / dataset
+    tp_wet_path = prefix / "tp_wet_trigger.npy"
+    if tp_wet_path.exists():
+        result["tp_wet_trigger"] = np.load(str(tp_wet_path))
     return result
 
 
@@ -237,6 +249,12 @@ def run_pipeline(
     batch_size  = config["training"]["batch_size"]
     num_workers = config.get("num_workers", 0)
 
+    # Phase 2 classification knobs. Regression ignores both. Defaults chosen
+    # per Phase-2 plan §2.1 and §2.4.
+    data_cfg        = config.get("data", {})
+    label_mode      = data_cfg.get("label_mode", "per_variable")
+    label_variables = data_cfg.get("label_variables", None)
+
     preproc = config.get("preprocessing", {})
     train_ratio           = preproc.get("train_ratio", 0.6)
     val_ratio             = preproc.get("val_ratio", 0.2)
@@ -255,22 +273,37 @@ def run_pipeline(
     current_hash = compute_data_hash(dataset, flat_config)
 
     if not force_rerun and _check_hash(dataset, current_hash) and _cache_exists(dataset):
+        print(f"[mem] {_rss_gib():.2f} GiB before cache load", flush=True)
         log.info("Cache hit — loading preprocessed arrays from disk.")
         cached = load_cache(dataset)
+        print(f"[mem] {_rss_gib():.2f} GiB after load_cache", flush=True)
         adj  = cached["adj"]
         meta = cached["meta"]
-        X_train = np.clip(cached["X_train"], -clip_sigma, clip_sigma)
-        X_val   = np.clip(cached["X_val"],   -clip_sigma, clip_sigma)
-        X_test  = np.clip(cached["X_test"],  -clip_sigma, clip_sigma)
+        # np.clip returns a fresh array; release the raw cached copies
+        # immediately (each is 1.5–4.4 GB at production scale) so we don't
+        # sit on both the raw and clipped versions during dataset build.
+        X_train = np.clip(cached.pop("X_train"), -clip_sigma, clip_sigma)
+        X_val   = np.clip(cached.pop("X_val"),   -clip_sigma, clip_sigma)
+        X_test  = np.clip(cached.pop("X_test"),  -clip_sigma, clip_sigma)
+        y_train = cached.pop("y_train")
+        y_val   = cached.pop("y_val")
+        y_test  = cached.pop("y_test")
+        print(f"[mem] {_rss_gib():.2f} GiB after clip + pop", flush=True)
         train_loader, val_loader, test_loader = build_dataloaders(
             X_train, X_val, X_test,
-            cached["y_train"], cached["y_val"],  cached["y_test"],
+            y_train, y_val, y_test,
             input_len=input_len, horizon=horizon, task=task,
             batch_size=batch_size, num_workers=num_workers,
+            label_mode=label_mode, var_names=meta.get("var_names"),
+            label_variables=label_variables,
         )
+        print(f"[mem] {_rss_gib():.2f} GiB after build_dataloaders", flush=True)
         meta.update({"mean": cached["mean"], "std": cached["std"],
                      "thresholds": cached["thresholds"],
-                     "coords": cached["coords"]})
+                     "coords": cached["coords"],
+                     "label_mode": label_mode,
+                     "label_variables": label_variables or meta.get("var_names"),
+                     "tp_wet_trigger": cached.get("tp_wet_trigger")})
         return train_loader, val_loader, test_loader, adj, meta
 
     # 1. Parse -----------------------------------------------------------
@@ -309,7 +342,12 @@ def run_pipeline(
 
     # 4. Label -----------------------------------------------------------
     log.info("Step 4/6: 95th-percentile extreme-event labels…")
-    y_train, y_val, y_test, thresholds = label_all_splits(X_train, X_val, X_test)
+    y_train, y_val, y_test, thresholds, tp_wet_trigger = label_all_splits(
+        X_train, X_val, X_test, var_names=var_names,
+    )
+    if tp_wet_trigger.any():
+        log.info("  tp wet-hour rule fired at %d / %d stations",
+                 int(tp_wet_trigger.sum()), tp_wet_trigger.shape[0])
 
     # 5. Normalise -------------------------------------------------------
     log.info("Step 5/6: Z-score normalisation (stats from train only)…")
@@ -351,7 +389,8 @@ def run_pipeline(
         "coords":  coords[["lat", "lon"]].values.astype(np.float32),
         "mean":    mean,
         "std":     std,
-        "thresholds": thresholds,
+        "thresholds":     thresholds,
+        "tp_wet_trigger": tp_wet_trigger,
         "meta":    meta,
     })
     _write_hash(dataset, current_hash)
@@ -366,7 +405,14 @@ def run_pipeline(
         y_train, y_val, y_test,
         input_len=input_len, horizon=horizon, task=task,
         batch_size=batch_size, num_workers=num_workers,
+        label_mode=label_mode, var_names=var_names,
+        label_variables=label_variables,
     )
     coords_arr = coords[["lat", "lon"]].values.astype(np.float32)
-    meta.update({"mean": mean, "std": std, "thresholds": thresholds, "coords": coords_arr})
+    meta.update({
+        "mean": mean, "std": std, "thresholds": thresholds, "coords": coords_arr,
+        "label_mode": label_mode,
+        "label_variables": label_variables or var_names,
+        "tp_wet_trigger": tp_wet_trigger,
+    })
     return train_loader, val_loader, test_loader, adj, meta
