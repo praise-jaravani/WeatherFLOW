@@ -41,7 +41,16 @@ We use **ERA5 reanalysis for South Africa only**, downloaded via the Copernicus 
 
 - **Downloaded**: 6 variables via CDS API. Each monthly file is a ZIP containing two inner NetCDF4 files — instantaneous vars in one, accumulated `tp` in the other. Handled transparently by [preprocessing/era5_parser.py](../preprocessing/era5_parser.py).
 - **Computed**: 2 derived variables built in [preprocessing/derive.py](../preprocessing/derive.py). `ws10` from wind components (physical); `rh` from temperature/dewpoint/pressure using the Magnus formula (standard meteorology).
-- **Total after derivation**: **8 variables** — this is `d=8` you see in tensor shapes.
+- **Total after derivation**: **8 variables** — this is `d=8` you see in tensor shapes. The model is trained to predict **all 8** jointly.
+
+### 1.1a Alignment with Gaibie et al. (2024)
+
+Our HPO for AGCRN and CLCRN comes from Gaibie et al. (2024). Their paper benchmarks on **4 primary target variables**: `t2m` (2m temperature), `rh` (relative humidity), `ws10` (10m wind speed), `sp` (surface pressure). Two things about our variable set to be honest about in the paper:
+
+- **Training input/output = d=8**, not d=4. We feed all 8 (including `tp` and pre-derived `ws10`/`rh`) rather than the raw 5-ish Gaibie fed. Pre-deriving `ws10`/`rh` means the model doesn't have to internally reconstruct them each forward pass, and adding `tp` costs nothing. This is a "same feature set expressed differently" divergence, not a methodological break.
+- **Headline metrics filter to Gaibie's 4**. `evaluation/regression.py:REPORT_VARS = ["t2m", "rh", "ws10", "sp"]` — the paper's headline tables report on these 4 primary targets. The other 4 (`d2m`, `tp`, `u10`, `v10`) are reported in the full 8-variable table for completeness / appendix.
+
+**Paper phrasing you can use:** *"The model is trained to jointly predict all 8 variables in the feature vector; headline results are reported on the 4 primary target variables of Gaibie et al. (2024), with the full 8-variable table in Appendix X."*
 
 ### 1.2 Phase-2 label variables
 
