@@ -48,8 +48,8 @@ def load_model_metrics_all_seeds(model, task):
 
 
 def regression_skill_scores():
-    persistence = load_json(BASELINES_DIR / "regression" / "persistence.json")
-    climatology = load_json(BASELINES_DIR / "regression" / "climatology.json")
+    persistence = load_json(BASELINES_DIR / "regression-persistence.json")
+    climatology = load_json(BASELINES_DIR / "regression-climatology.json")
     var_names = list(persistence["mae"].keys())
     print(f"Regression variables: {var_names}")
     print(f"Persistence MSE:  {persistence['mse']}")
@@ -112,8 +112,8 @@ def regression_skill_scores():
 
 
 def classification_skill_scores():
-    persistence = load_json(BASELINES_DIR / "classification" / "persistence.json")
-    climatology = load_json(BASELINES_DIR / "classification" / "climatology.json")
+    persistence = load_json(BASELINES_DIR / "classification-persistence.json")
+    climatology = load_json(BASELINES_DIR / "classification-climatology.json")
     var_names = persistence["label_variables"]
     print(f"\nClassification variables: {var_names}")
     print(f"Persistence macro F1:  {persistence['macro']['f1']:.4f}  AUC: {persistence['macro']['auc_roc']:.4f}")

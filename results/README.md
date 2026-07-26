@@ -50,15 +50,13 @@ results/
 │   ├── nrmse_per_horizon.png       Horizon curves (the dome-shape finding)
 │   └── geographic_{var}.png        Per-station geographic maps
 │
-└── baselines/                      Persistence + climatology reference forecasts
-    ├── SUMMARY.md                  ← start here. Skill scores, F1 lifts, paste-ready paragraphs.
-    ├── skill_scores.json           Machine-readable MSSS + F1/AUC lifts per (model, baseline, variable)
-    ├── regression/
-    │   ├── persistence.json        MAE, MSE, RMSE, NRMSE-per-horizon, VPT for the persistence baseline
-    │   └── climatology.json        Same schema for climatology (train mean per station×variable)
-    └── classification/
-        ├── persistence.json        F1, precision, recall, AUC-ROC, PR-AUC for extreme-persistence
-        └── climatology.json        Same for constant-rate climatology (~5% positive rate)
+└── baselines/                          Persistence + climatology reference forecasts
+    ├── SUMMARY.md                      ← start here. Skill scores, F1 lifts, paste-ready paragraphs.
+    ├── skill_scores.json               Machine-readable MSSS + F1/AUC lifts per (model, baseline, variable)
+    ├── regression-persistence.json     MAE, MSE, RMSE, NRMSE-per-horizon, VPT for the persistence baseline
+    ├── regression-climatology.json     Same schema for climatology (train mean per station×variable)
+    ├── classification-persistence.json F1, precision, recall, AUC-ROC, PR-AUC for extreme-persistence
+    └── classification-climatology.json Same for constant-rate climatology (~5% positive rate)
 ```
 
 ## Headline results

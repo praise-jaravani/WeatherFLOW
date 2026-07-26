@@ -35,8 +35,8 @@ import numpy as np
 CACHE = Path(__file__).parent.parent / "preprocessing" / "cache" / "era5"
 OUT   = Path(__file__).parent.parent / "results" / "baselines"
 OUT.mkdir(parents=True, exist_ok=True)
-(OUT / "regression").mkdir(exist_ok=True)
-(OUT / "classification").mkdir(exist_ok=True)
+# Files use self-descriptive names (e.g. classification-persistence.json)
+# so they're clear when uploaded to external tools individually.
 
 INPUT_LEN = 12
 HORIZON   = 12
@@ -393,25 +393,25 @@ if __name__ == "__main__":
         lambda cs, ce: _persistence_pred(X_test, cs, ce), "persistence",
         X_test, mean, std, thresholds, var_names,
     )
-    save_json(OUT / "regression" / "persistence.json", reg_persist)
+    save_json(OUT / "regression-persistence.json", reg_persist)
 
     reg_climate  = regression_baseline_metrics(
         lambda cs, ce: _climatology_pred(train_mean_norm, ce - cs), "climatology",
         X_test, mean, std, thresholds, var_names,
     )
-    save_json(OUT / "regression" / "climatology.json", reg_climate)
+    save_json(OUT / "regression-climatology.json", reg_climate)
 
     y_test_lab = np.asarray(y_test)[..., label_idx].astype(np.int8)
     cls_persist  = classification_baseline_metrics(
         lambda cs, ce: _persistence_cls_pred(y_test_lab, cs, ce), "persistence",
         y_test, var_names,
     )
-    save_json(OUT / "classification" / "persistence.json", cls_persist)
+    save_json(OUT / "classification-persistence.json", cls_persist)
 
     cls_climate  = classification_baseline_metrics(
         lambda cs, ce: _climatology_cls_pred(train_rate, ce - cs), "climatology",
         y_test, var_names,
     )
-    save_json(OUT / "classification" / "climatology.json", cls_climate)
+    save_json(OUT / "classification-climatology.json", cls_climate)
 
     print("\nAll baselines computed.")
