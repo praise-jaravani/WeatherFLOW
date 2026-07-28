@@ -46,10 +46,10 @@ _Persistence and climatology reference forecasts, with skill scores for each of 
 | clcrn | climatology | +0.802 | +0.757 | +0.536 | +0.638 | +0.636 | +0.898 |
 | climode | persistence | +0.361 | +0.025 | +0.063 | +0.147 | +0.211 | +0.103 |
 | climode | climatology | +0.736 | +0.695 | +0.454 | +0.511 | +0.572 | +0.863 |
-| mtgode | persistence | +0.202 | -0.135 | -0.018 | +0.038 | +0.084 | -0.056 |
-| mtgode | climatology | +0.578 | +0.535 | +0.374 | +0.402 | +0.445 | +0.703 |
-| agcrn | persistence | -0.076 | -0.304 | -0.164 | -0.163 | -0.116 | -0.289 |
-| agcrn | climatology | +0.300 | +0.365 | +0.228 | +0.201 | +0.245 | +0.470 |
+| mtgode | persistence | +0.206 | -0.129 | -0.015 | +0.043 | +0.090 | -0.054 |
+| mtgode | climatology | +0.582 | +0.540 | +0.377 | +0.408 | +0.451 | +0.705 |
+| agcrn | persistence | -0.079 | -0.307 | -0.166 | -0.165 | -0.119 | -0.292 |
+| agcrn | climatology | +0.297 | +0.362 | +0.226 | +0.199 | +0.243 | +0.468 |
 
 ### AUC-ROC (model — baseline)
 
@@ -59,10 +59,10 @@ _Persistence and climatology reference forecasts, with skill scores for each of 
 | clcrn | climatology | +0.496 | +0.499 | +0.446 | +0.469 | +0.471 | +0.500 |
 | climode | persistence | +0.317 | +0.155 | +0.238 | +0.262 | +0.293 | +0.123 |
 | climode | climatology | +0.488 | +0.491 | +0.413 | +0.426 | +0.455 | +0.498 |
-| mtgode | persistence | +0.287 | +0.128 | +0.190 | +0.224 | +0.251 | +0.109 |
-| mtgode | climatology | +0.458 | +0.464 | +0.365 | +0.388 | +0.414 | +0.483 |
-| agcrn | persistence | +0.150 | +0.068 | +0.081 | +0.051 | +0.110 | +0.056 |
-| agcrn | climatology | +0.322 | +0.404 | +0.256 | +0.215 | +0.272 | +0.430 |
+| mtgode | persistence | +0.287 | +0.129 | +0.192 | +0.227 | +0.254 | +0.109 |
+| mtgode | climatology | +0.459 | +0.465 | +0.367 | +0.391 | +0.416 | +0.484 |
+| agcrn | persistence | +0.148 | +0.067 | +0.080 | +0.048 | +0.108 | +0.055 |
+| agcrn | climatology | +0.319 | +0.403 | +0.255 | +0.213 | +0.270 | +0.430 |
 
 ### Baseline classification headline
 
@@ -87,10 +87,10 @@ _Persistence and climatology reference forecasts, with skill scores for each of 
 
 **Version 1 — headline sentence (safe):**
 
-> _"All four models — AGCRN, CLCRN, ClimODE, and MTGODE — comprehensively outperform the climatology baseline across all reported variables. CLCRN and ClimODE additionally beat the persistence baseline on every variable, whereas MTGODE and AGCRN lose to persistence on surface pressure and near-surface dew point — a further indication of the tier structure identified in F2."_
+> _"All four models — AGCRN, CLCRN, ClimODE-inspired, and MTGODE — comprehensively outperform the climatology baseline across all reported variables. CLCRN and ClimODE-inspired additionally beat the persistence baseline on every variable, whereas MTGODE and AGCRN lose to persistence on surface pressure and near-surface dew point — a further indication of the tier structure identified in F2."_
 
 **Version 2 — sharper story (recommended for the paper):**
 
-> _"Skill-score analysis (Murphy Skill Score against persistence and climatology baselines; see Table X) mirrors the tier structure of F2. The Tier-1 models (CLCRN, ClimODE) beat both baselines on every variable, with CLCRN cutting persistence MSE by 57–93% depending on the variable. The Tier-2 models pass the climatology floor but stall against persistence on surface pressure and dew point — a diagnostic result showing that the added value of the generic-graph architectures is concentrated on temperature and humidity, not the harder atmospheric-state variables."_
+> _"Skill-score analysis (Murphy Skill Score against persistence and climatology baselines; see Table X) mirrors the tier structure of F2. The Tier-1 models (CLCRN, ClimODE-inspired) beat both baselines on every variable, with CLCRN cutting persistence MSE by 57–93% depending on the variable. The Tier-2 models pass the climatology floor but stall against persistence on surface pressure and dew point — a diagnostic result showing that the added value of the generic-graph architectures is concentrated on temperature and humidity, not the harder atmospheric-state variables."_
 
 Version 2 is the stronger paper narrative: it doesn't hide the Tier-2 persistence losses; it *uses* them to reinforce the tier finding.

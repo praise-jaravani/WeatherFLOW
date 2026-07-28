@@ -56,5 +56,5 @@ Per-variable extreme-event classification. Labels = 95th-percentile per (station
 
 ## Cross-reference to Phase 1
 
-Phase 1 (t2m MAE): `CLCRN (1.17) < ClimODE (1.57) < MTGODE (2.19) < AGCRN (2.85)`  
-Phase 2 (macro F1): `CLCRN > ClimODE > MTGODE > AGCRN` — same ranking.
+Phase 1 (t2m MAE): `CLCRN (1.17) < ClimODE-inspired (1.57) < MTGODE (2.19) < AGCRN (2.85)`  
+Phase 2 (macro F1): `CLCRN > ClimODE-inspired > MTGODE > AGCRN` — same ranking.

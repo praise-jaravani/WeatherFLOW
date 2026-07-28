@@ -15,11 +15,11 @@ While Phase 1 production runs, the 4 teammate-model adapter stubs were implement
 
 **Production-ready when Phase 1 finishes:** STLGRU and Lite-STGNN. Per-model details and the production-launch caveats are in [specs/RESEARCH_FINDINGS.md](specs/RESEARCH_FINDINGS.md) under each model's section. DiffSTG and USTD ready pending smoke confirmation.
 
-## ClimODE epochs cap lowered to 30 (2026-06-25)
+## ClimODE-inspired epochs cap lowered to 30 (2026-06-25)
 
-## ClimODE epochs cap lowered to 30 (2026-06-25 — verified working)
+## ClimODE-inspired epochs cap lowered to 30 (2026-06-25 — verified working)
 
-After both ClimODE seeds 42 and 43 timed out at epoch 37/40 under `epochs: 40` (24h SLURM wall hit before test eval), [experiments/configs/climode.yaml](experiments/configs/climode.yaml#L15) was lowered to `epochs: 30`. Both ClimODE seeds 42 and 43 reran successfully under the new config (18h40m and 19h01m). Justification, references (Goodfellow 2016, Gaibie 2024, Davidson & Moodley 2022, Ayers et al., MLCommons), and the paste-ready paper paragraph are in [specs/RESEARCH_FINDINGS.md](specs/RESEARCH_FINDINGS.md) under the ClimODE section. **Phase 2 follow-up**: switching ClimODE to a fixed-step ODE solver could restore the full 40-epoch budget — captured in RESEARCH_FINDINGS.md and status_roadmap memory.
+After both ClimODE-inspired seeds 42 and 43 timed out at epoch 37/40 under `epochs: 40` (24h SLURM wall hit before test eval), [experiments/configs/climode.yaml](experiments/configs/climode.yaml#L15) was lowered to `epochs: 30`. Both ClimODE-inspired seeds 42 and 43 reran successfully under the new config (18h40m and 19h01m). Justification, references (Goodfellow 2016, Gaibie 2024, Davidson & Moodley 2022, Ayers et al., MLCommons), and the paste-ready paper paragraph are in [specs/RESEARCH_FINDINGS.md](specs/RESEARCH_FINDINGS.md) under the ClimODE-inspired section. **Phase 2 follow-up**: switching ClimODE-inspired to a fixed-step ODE solver could restore the full 40-epoch budget — captured in RESEARCH_FINDINGS.md and status_roadmap memory.
 
 
 ## 🚨 Head-node policy incident (2026-06-24 11:12 SAST)
@@ -50,8 +50,8 @@ I ran `ssh hpc "singularity exec ... python patch_vpt.py"` directly. The cache l
 | 947744_42 | AGCRN | 42 |
 | 947745_42 | MTGODE | 42 |
 | 947746_43 | MTGODE | 43 |
-| 947747_42 | ClimODE | 42 |
-| 947748_43 | ClimODE | 43 |
+| 947747_42 | ClimODE-inspired | 42 |
+| 947748_43 | ClimODE-inspired | 43 |
 
 **Watcher now runs on HPC head node** (survives local WSL restarts):
 - Script: `/scratch/jrvpra001/weatherflow/hpc_watcher.sh`
@@ -62,7 +62,7 @@ I ran `ssh hpc "singularity exec ... python patch_vpt.py"` directly. The cache l
 Queued for drip-feed:
 - **AGCRN seeds 43–51** (9 more)
 - **MTGODE seeds 44–51** (8 more)
-- **ClimODE seeds 44–51** (8 more)
+- **ClimODE-inspired seeds 44–51** (8 more)
 - **CLCRN seeds 42–51** (10 — newly added)
 
 ## 🟢 CLCRN unblocked (no container rebuild needed)
@@ -79,7 +79,7 @@ As of 2026-06-24 10:55:
 - AGCRN seed 42 — completed (job 950031, 3h24m)
 - MTGODE seed 42 — completed (job 950033, 10h27m)
 - MTGODE seed 43 — completed (job 950034, 5h20m)
-- ClimODE seeds 42, 43 — still running (~5h, ~3h)
+- ClimODE-inspired seeds 42, 43 — still running (~5h, ~3h)
 - CLCRN seed 42 retry — queued (job 951019), tests the device fix in [clcrn_adapter.py:_move_aux_tensors](models/baselines/clcrn_adapter.py)
 
 256G mem held without OOMing. **3 production runs / 40 = 7.5% of Phase 1 done.**

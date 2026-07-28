@@ -1,6 +1,14 @@
-# ClimODE — Climate and Weather Forecasting with Physics-informed Neural ODEs
-# Continuous-time model (Praise's workstream).
-# Originally designed for gridded ERA5 data; adapted to station graphs here.
+# ClimODE-inspired — advection-motivated graph ODE (Praise's workstream).
+#
+# ⚠️ NOT the Verma et al. (ICLR 2024) ClimODE architecture. This is a
+# hand-written physics-motivated graph ODE that borrows the core advection
+# idea from Verma et al. but skips their flow-velocity network, Gaussian
+# emission network, and second-order continuity equation. ~17K params vs
+# their several million. Referenced everywhere in results docs as
+# "ClimODE-inspired". CLI/model class names kept as `climode` for
+# backwards-compat with the results archive; label is the honest one.
+# See models/continuous_time/climode_model.py header for full context.
+#
 # ODE solver settings: same loose/tight pattern as MTGODE.
 
 model:

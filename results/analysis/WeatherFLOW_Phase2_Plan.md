@@ -95,7 +95,7 @@ With labels at `(B, H, N, d_label)`, every adapter's existing output already mat
 
 ### 3.3 Hyperparameters
 
-Carry Phase-1 configs unchanged; intervene per model only on demonstrated convergence failure (monitor val loss and val F1 per epoch). ClimODE keeps the adaptive solver and the 30-epoch cap — its Tier-1 Phase-1 finish closed the fixed-step-solver question by that follow-up's own decision rule.
+Carry Phase-1 configs unchanged; intervene per model only on demonstrated convergence failure (monitor val loss and val F1 per epoch). ClimODE-inspired keeps the adaptive solver and the 30-epoch cap — its Tier-1 Phase-1 finish closed the fixed-step-solver question by that follow-up's own decision rule.
 
 ### 3.4 Verifications folded into Stage 1
 
@@ -126,7 +126,7 @@ AGCRN, CLCRN, MTGODE, ClimODE-inspired × 10 seeds (42–51) × the same dataset
 
 For each Phase-1 checkpoint: run **inference only** on the test set and threshold the regression forecast at the same train-split θₙ,ᵥ → binary predictions → same contingency metrics. Zero training cost. This asks the sharpest chaos-primed question available: *does distribution-sensitive training (WBCE) beat post-hoc thresholding of MSE-trained regression, per architecture?* If WBCE wins on recall/F1, that is direct evidence for the DS criterion; if it doesn't, that is a genuinely publishable negative result about where the smoothing pathology lives. Evaluating deterministic forecasts categorically is precisely the GraphCast / Olivetti & Messori mode, so the comparison is precedented.
 
-Practicalities: requires Phase-1 raw test predictions or a re-inference pass from checkpoints (minutes–hours per checkpoint; fills queue gaps). Priority order if time is short: MTGODE + ClimODE only → defer rest to Phase 3. **Queue the WBCE matrix first; this rides in the gaps.**
+Practicalities: requires Phase-1 raw test predictions or a re-inference pass from checkpoints (minutes–hours per checkpoint; fills queue gaps). Priority order if time is short: MTGODE + ClimODE-inspired only → defer rest to Phase 3. **Queue the WBCE matrix first; this rides in the gaps.**
 
 ---
 
@@ -154,11 +154,11 @@ Per-model config tuning: none up front, exactly as previously agreed; revisit on
 |---|---|---|---|
 | 0 | Thu 9 – Fri 10 Jul | `audit_labels.py`; produce sign-off table (thresholds, tp diagnostics, positive rates incl. season/hour, OR-rate) | **Team + supervisor sign-off on §2 by Fri 11 Jul** ⚠ |
 | 1 | Fri 10 – Sat 11 | Local unit smoke, CPU, N=10, all 4 models: shapes, probability range, regression regression-test, loss step | All tests green |
-| 2 | Sat 11 – Sun 12 | Local integration: `cli.py --task classification --runs 1 --max-nodes 10 --epochs 3` for AGCRN, MTGODE, ClimODE (CLCRN needs GPU) | Finite decreasing loss; metrics JSON has per-variable P/R/F1/AUC/PR-AUC/CSI |
+| 2 | Sat 11 – Sun 12 | Local integration: `cli.py --task classification --runs 1 --max-nodes 10 --epochs 3` for AGCRN, MTGODE, ClimODE-inspired (CLCRN needs GPU) | Finite decreasing loss; metrics JSON has per-variable P/R/F1/AUC/PR-AUC/CSI |
 | 3 | Mon 13 | HPC CPU smoke (ada, N=100): container, cache, full metrics path | Clean run |
 | 4 | Mon 13 – Tue 14 | HPC GPU smoke (l40s, 1 epoch): device checks, per-epoch wall time, **MaxRSS → set `--mem`** | Clean run + budget numbers |
 | 5 | Launch Tue 14 – Thu 16 | Production 4 × 10 seeds via the drip-feed watcher; est. 200–600 GPU-h (~Phase-1 scale) | **Hard gate: all seeds queued by 16 Jul** |
-| — | Queue gaps | Thresholded-regression baseline inference (§5.2), MTGODE + ClimODE first | Optional |
+| — | Queue gaps | Thresholded-regression baseline inference (§5.2), MTGODE + ClimODE-inspired first | Optional |
 | Analysis | 23 – 26 Jul | `analyze_matrix`, Wilcoxon, per-variable tables, F1 maps, demo figures | — |
 | Demo | 27 Jul | Progress Demonstration | — |
 
@@ -197,7 +197,7 @@ Note for Génevieve: per-variable value-space labels suit diffusion models natur
 
 - **Methodology paragraph:** §2.1, ready to adapt.
 - **Citable spine:** Lam et al. 2023 (per-variable climatological-exceedance protocol); Olivetti & Messori 2024 GMD (per-phenomenon extremes evaluation; u/v→speed error compounding; Watson-criteria framing); Olivetti & Messori 2024 GMD *review* (WBCE, Eq. 3 — already in project knowledge); Zhang et al. 2011 (ETCCDI reference-period and wet-day conventions); Lopez-Gomez et al. 2023 (extreme-weighted losses beat MSE — pre-loads Phase 3); Miloshevich et al. 2023 (reweighting vs resampling); Sofaer et al. 2019 / Saito & Rehmsmeier 2015 (PR-AUC under imbalance); Wilks 2011 (contingency skill scores).
-- **The stated scientific question:** does the Phase-1 ordering (CLCRN > ClimODE > MTGODE > AGCRN) survive when the objective stops rewarding conditional-mean smoothing — and does WBCE training beat thresholded MSE-regression per architecture (§5.2)? Either answer advances the chaos-primed DS thesis.
+- **The stated scientific question:** does the Phase-1 ordering (CLCRN > ClimODE-inspired > MTGODE > AGCRN) survive when the objective stops rewarding conditional-mean smoothing — and does WBCE training beat thresholded MSE-regression per architecture (§5.2)? Either answer advances the chaos-primed DS thesis.
 
 ---
 

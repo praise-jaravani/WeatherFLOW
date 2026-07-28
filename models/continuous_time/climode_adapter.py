@@ -1,8 +1,14 @@
 """
-Adapter (method) for ClimODE — training and prediction logic.
+Adapter (method) for the ClimODE-inspired advection graph-ODE — training and
+prediction logic.
 
-ClimODE uses physics-inspired advection ODE integrated with torchdiffeq.
-Unlike MTGODE, ClimODE uses the static adjacency from preprocessing as the
+⚠️ Not the Verma et al. (ICLR 2024) ClimODE architecture. See
+climode_model.py header for the naming note. The class name is kept as
+`ClimODEAdapter` for CLI backwards-compat; the label "ClimODE-inspired" is
+used in all human-facing docs.
+
+Uses physics-inspired advection ODE integrated with torchdiffeq. Unlike
+MTGODE, this adapter uses the static adjacency from preprocessing as the
 graph transport operator (A in dX/dt = -gate(X)·A·X + emission(X)).
 
 forward() vs predict() distinction:

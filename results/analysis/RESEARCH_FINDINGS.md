@@ -8,9 +8,9 @@ Living document of empirical observations from the production HPC runs on ERA5 S
 
 ## Status: Phase 1 COMPLETE (2026-07-09)
 
-**All 40 production seeds landed** (10 per model across AGCRN, CLCRN, MTGODE, ClimODE). Every pairwise Wilcoxon comparison hits **p = 0.00195** — the theoretical minimum p-value at n=10. The ranking is statistically bulletproof:
+**All 40 production seeds landed** (10 per model across AGCRN, CLCRN, MTGODE, ClimODE-inspired). Every pairwise Wilcoxon comparison hits **p = 0.00195** — the theoretical minimum p-value at n=10. The ranking is statistically bulletproof:
 
-**CLCRN > ClimODE > MTGODE > AGCRN**
+**CLCRN > ClimODE-inspired > MTGODE > AGCRN**
 
 Full details in F2 below.
 
@@ -27,19 +27,19 @@ Full details in F2 below.
 | Model | t2m | d2m | sp | rh | u10 | v10 | ws10 | tp |
 |-------|-----|-----|-----|-----|-----|-----|-----|-----|
 | **CLCRN** | **≥12** (10/10 censored) | 7.1 | **≥12** (10/10 censored) | 3.0 | 2.0 | 2.0 | 1.0 | 0.0 |
-| **ClimODE** | 3.3 | 3.0 | 8.1 | 1.4 | 0.7 | 1.0 | 0.0 | 0.0 |
+| **ClimODE-inspired** | 3.3 | 3.0 | 8.1 | 1.4 | 0.7 | 1.0 | 0.0 | 0.0 |
 | MTGODE | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 |
 | AGCRN | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 | 0.0 |
 
 "≥12" = right-censored — the model NEVER crossed ε=0.3 within the 12-hour horizon, so the true VPT is at least 12h. Reporting =12 would understate it.
 
 **What this shows:**
-- **Tier 1 (CLCRN, ClimODE)** maintains predictive validity for at least a few horizon steps on most variables; CLCRN sustains **≥12h of skill on t2m and sp** at every one of its 10 seeds.
+- **Tier 1 (CLCRN, ClimODE-inspired)** maintains predictive validity for at least a few horizon steps on most variables; CLCRN sustains **≥12h of skill on t2m and sp** at every one of its 10 seeds.
 - **Tier 2 (MTGODE, AGCRN)** fails ε=0.3 at horizon step 0 on every variable — first-step forecast already exceeds the threshold. This is a genuinely negative result for those architectures at this benchmark.
 - **Precipitation (tp)** is 0 across all four models — the extreme-hardest variable, consistent with the wider literature.
 
 **Nuance — proposal's continuous-time hypothesis is only partially supported:**
-VPT tracks the **tier** structure (geometry-aware > generic-graph), not the **CT/discrete** divide. Recurrent CLCRN — a discrete-time model — sustains the longest predictive validity. Continuous-time MTGODE gets VPT=0. So the proposal's claim that "continuous-time methods should extend predictive validity" is not falsified overall (ClimODE > MTGODE, and both CT methods beat AGCRN), but the strongest sustained-validity result belongs to a discrete-time architecture. The proposal explicitly protects this outcome — a partial null on one of RQ3's contrasts is still a valid, publishable finding.
+VPT tracks the **tier** structure (geometry-aware > generic-graph), not the **CT/discrete** divide. Recurrent CLCRN — a discrete-time model — sustains the longest predictive validity. Continuous-time MTGODE gets VPT=0. So the proposal's claim that "continuous-time methods should extend predictive validity" is not falsified overall (ClimODE-inspired > MTGODE, and both CT methods beat AGCRN), but the strongest sustained-validity result belongs to a discrete-time architecture. The proposal explicitly protects this outcome — a partial null on one of RQ3's contrasts is still a valid, publishable finding.
 
 **How VPT was recomputed (reproducible):**
 For each seed's `test_metrics.json`, we read `nrmse_per_horizon[var]` (a length-12 list) and find the first horizon step where the value exceeds ε=0.3. If no step crosses, we mark the run as right-censored at H=12. The script lives at [scripts/analyze_matrix.py](scripts/analyze_matrix.py) but the ad-hoc recomputation is a ~20-line Python block using `nrmse_per_horizon` fields — no re-training required.
@@ -59,18 +59,18 @@ Phase 1 is complete: 40/40 seeds (10 per model). Every one of the six pairwise W
 | Model | n | t2m (°C) | d2m (°C) | u10 (m/s) | v10 (m/s) | ws10 (m/s) | sp (Pa) | rh (%) | tp (m/h) |
 |-------|---|----------|----------|-----------|-----------|------------|---------|--------|----------|
 | **CLCRN** | 10 | **1.172 ± 0.006** | **1.226 ± 0.003** | **0.866 ± 0.004** | **0.895 ± 0.003** | **0.739 ± 0.003** | **62.0 ± 0.4** | **5.005 ± 0.021** | **6.27e-05 ± 4.1e-07** |
-| **ClimODE** | 10 | **1.568 ± 0.002** | **1.671 ± 0.005** | **1.278 ± 0.006** | **1.358 ± 0.003** | **1.032 ± 0.002** | **94.7 ± 0.5** | **6.751 ± 0.039** | **8.38e-05 ± 1.6e-06** |
+| **ClimODE-inspired** | 10 | **1.568 ± 0.002** | **1.671 ± 0.005** | **1.278 ± 0.006** | **1.358 ± 0.003** | **1.032 ± 0.002** | **94.7 ± 0.5** | **6.751 ± 0.039** | **8.38e-05 ± 1.6e-06** |
 | MTGODE | 10 | 2.188 ± 0.051 | 2.066 ± 0.057 | 1.455 ± 0.055 | 1.546 ± 0.044 | 1.149 ± 0.030 | 151.5 ± 4.91 | 8.627 ± 0.193 | 7.79e-05 ± 2.8e-06 |
 | AGCRN | 10 | 2.852 ± 0.204 | 2.615 ± 0.029 | 1.950 ± 0.048 | 2.037 ± 0.051 | 1.431 ± 0.025 | 209.2 ± 6.56 | 11.068 ± 0.537 | 9.39e-05 ± 2.1e-06 |
 
-**Variance signature is striking and holds at n=10:** Tier 1 models (CLCRN, ClimODE) have std ~10–100× smaller than Tier 2 on every variable. Geometry-aware architectures are not only more accurate but dramatically more reproducible seed-to-seed.
+**Variance signature is striking and holds at n=10:** Tier 1 models (CLCRN, ClimODE-inspired) have std ~10–100× smaller than Tier 2 on every variable. Geometry-aware architectures are not only more accurate but dramatically more reproducible seed-to-seed.
 
 **Ranking by mean t2m MAE (n=10):**
 
 | Rank | Model | t2m MAE | std | vs best | vs same-tier |
 |------|-------|---------|-----|---------|--------------|
 | 1 | CLCRN | 1.172 | 0.006 | — | — |
-| 2 | ClimODE | 1.568 | 0.002 | +34% | +34% within Tier 1 |
+| 2 | ClimODE-inspired | 1.568 | 0.002 | +34% | +34% within Tier 1 |
 | 3 | MTGODE | 2.188 | 0.051 | +87% | best of Tier 2 |
 | 4 | AGCRN | 2.852 | 0.204 | +143% | +30% within Tier 2 |
 
@@ -79,11 +79,11 @@ Phase 1 is complete: 40/40 seeds (10 per model). Every one of the six pairwise W
 | Comparison | n | wilcoxon stat | p-value | interpretation |
 |------------|---|---------------|---------|----------------|
 | AGCRN vs CLCRN | 10 | 0.0 | **0.00195** | ✅ every seed → CLCRN wins |
-| AGCRN vs ClimODE | 10 | 0.0 | **0.00195** | ✅ every seed → ClimODE wins |
+| AGCRN vs ClimODE-inspired | 10 | 0.0 | **0.00195** | ✅ every seed → ClimODE-inspired wins |
 | AGCRN vs MTGODE | 10 | 0.0 | **0.00195** | ✅ every seed → MTGODE wins |
-| CLCRN vs ClimODE | 10 | 0.0 | **0.00195** | ✅ every seed → CLCRN wins |
+| CLCRN vs ClimODE-inspired | 10 | 0.0 | **0.00195** | ✅ every seed → CLCRN wins |
 | CLCRN vs MTGODE | 10 | 0.0 | **0.00195** | ✅ every seed → CLCRN wins |
-| ClimODE vs MTGODE | 10 | 0.0 | **0.00195** | ✅ every seed → ClimODE wins |
+| ClimODE-inspired vs MTGODE | 10 | 0.0 | **0.00195** | ✅ every seed → ClimODE-inspired wins |
 
 **Note on p = 0.001953:** this is the *theoretical minimum* p-value of the Wilcoxon signed-rank test at n=10 paired observations (2^{-9}). All six comparisons hit that floor — the model ordering is 100% consistent across all 10 seed pairings. p<0.005 across the board.
 
@@ -91,10 +91,10 @@ Phase 1 is complete: 40/40 seeds (10 per model). Every one of the six pairwise W
 
 | Tier | Members | Architecture family | Mean t2m MAE | Std on t2m |
 |------|---------|---------------------|--------------|------------|
-| 1 | CLCRN, ClimODE | sphere/geometry-aware (spherical Chebyshev conv, physics-informed ODE) | 1.17–1.57 | 0.002–0.006 |
+| 1 | CLCRN, ClimODE-inspired | sphere/geometry-aware (spherical Chebyshev conv, physics-informed ODE) | 1.17–1.57 | 0.002–0.006 |
 | 2 | MTGODE, AGCRN | generic graph (adaptive graph conv, ODE-on-graph) | 2.19–2.85 | 0.051–0.204 |
 
-- **Within-tier gap:** ~34% (CLCRN→ClimODE), ~30% (MTGODE→AGCRN)
+- **Within-tier gap:** ~34% (CLCRN→ClimODE-inspired), ~30% (MTGODE→AGCRN)
 - **Cross-tier gap:** 40–60% (Tier 2 → Tier 1)
 
 **Story for the paper (confirmed at n=10):** the inductive bias of geographic / manifold structure matters more than the temporal modelling choice. Models that encode lat/lon manifold geometry beat models that learn the graph topology from scratch — the gap is large (~40–60%), consistent across all 8 forecast variables, and statistically bulletproof (six pairwise Wilcoxon comparisons all at p = 0.00195, the theoretical floor).
@@ -104,12 +104,12 @@ Phase 1 is complete: 40/40 seeds (10 per model). Every one of the six pairwise W
 | | Generic graph | Geometry-aware |
 |--|--|--|
 | **Recurrent** | AGCRN — 2.85°C | **CLCRN — 1.17°C** (best) |
-| **Continuous-time** | MTGODE — 2.19°C | **ClimODE — 1.57°C** |
+| **Continuous-time** | MTGODE — 2.19°C | **ClimODE-inspired — 1.57°C** |
 
 Reading the table:
 - Adding geometry awareness improves both temporal families by 40–60%
 - Adding continuous-time to a generic graph helps modestly (~25% MTGODE > AGCRN)
-- **Adding continuous-time to a geometry-aware model does NOT help** — CLCRN (RNN + spherical) beats ClimODE (CT + grid) by 34%. The two upgrades don't stack.
+- **Adding continuous-time to a geometry-aware model does NOT help** — CLCRN (RNN + spherical) beats ClimODE-inspired (CT + grid) by 34%. The two upgrades don't stack.
 
 Publishable narrative: for sparse-station regional weather forecasting, spatial inductive bias dominates the temporal modelling choice. Continuous-time formulations offer a modest edge on generic graphs but don't compound with geometric priors.
 
@@ -141,23 +141,23 @@ Computed persistence and climatology reference forecasts on the full test set (s
 | | Persistence baseline | Climatology baseline |
 |---|---------------------|---------------------|
 | **CLCRN** | +0.573 to +0.933 across variables, **all positive** | +0.577 to +0.967, **all positive** |
-| **ClimODE** | +0.256 to +0.886, **all positive** | +0.457 to +0.921, **all positive** |
+| **ClimODE-inspired** | +0.256 to +0.886, **all positive** | +0.457 to +0.921, **all positive** |
 | MTGODE | +0.299 to +0.777, **but negative on d2m (−0.040) and sp (−0.116)** | +0.448 to +0.810, all positive |
 | AGCRN | +0.022 to +0.637, **negative on d2m (−0.567), u10 (−0.141), v10 (−0.135), sp (−1.093)** | +0.218 to +0.672, all positive |
 
 **Classification F1 lift (F1_model − F1_baseline)**
 
-The pattern replicates. CLCRN and ClimODE beat persistence F1 on every one of the 6 label variables. MTGODE loses F1 to persistence on d2m, tp, and sp. AGCRN loses F1 to persistence on all 6 variables; its macro F1 of 0.302 is beaten by persistence's macro F1 of 0.487. All 4 models comfortably beat climatology (whose macro F1 is 0.00 by construction — constant 5% probability never crosses τ=0.5).
+The pattern replicates. CLCRN and ClimODE-inspired beat persistence F1 on every one of the 6 label variables. MTGODE loses F1 to persistence on d2m, tp, and sp. AGCRN loses F1 to persistence on all 6 variables; its macro F1 of 0.302 is beaten by persistence's macro F1 of 0.487. All 4 models comfortably beat climatology (whose macro F1 is 0.00 by construction — constant 5% probability never crosses τ=0.5).
 
 **What this means for the paper:**
 
 - **Climatology is the "does the model exist?" test — everyone passes.** All four models comprehensively beat climatology on every variable in both tasks. This defends every headline claim.
 - **Persistence is a genuine short-horizon competitor** for atmospheric-state variables (surface pressure sp, dew point d2m) at the Tier-2 level. That MTGODE and AGCRN lose to persistence on those specific variables is **not** a bug — it's a diagnostic result. It says: on those variables, the generic-graph architectures haven't learned anything more useful than "repeat the last observed value."
-- **Tier-1 (CLCRN, ClimODE) genuinely earns its win.** Cutting persistence MSE by 57–93% is a substantive gain. The geometric prior isn't just a marginal improvement — it's the difference between "beats trivial baseline" and "doesn't."
+- **Tier-1 (CLCRN, ClimODE-inspired) genuinely earns its win.** Cutting persistence MSE by 57–93% is a substantive gain. The geometric prior isn't just a marginal improvement — it's the difference between "beats trivial baseline" and "doesn't."
 
 **Paper narrative (paste-ready, honest framing):**
 
-> _"Skill-score analysis (Murphy Skill Score against persistence and climatology baselines; see Table X) mirrors the tier structure of F2. The Tier-1 models (CLCRN, ClimODE) beat both baselines on every variable, with CLCRN cutting persistence MSE by 57–93% depending on the variable. The Tier-2 models pass the climatology floor but stall against persistence on surface pressure and dew point — a diagnostic result showing that the added value of the generic-graph architectures is concentrated on temperature and humidity, not the harder atmospheric-state variables."_
+> _"Skill-score analysis (Murphy Skill Score against persistence and climatology baselines; see Table X) mirrors the tier structure of F2. The Tier-1 models (CLCRN, ClimODE-inspired) beat both baselines on every variable, with CLCRN cutting persistence MSE by 57–93% depending on the variable. The Tier-2 models pass the climatology floor but stall against persistence on surface pressure and dew point — a diagnostic result showing that the added value of the generic-graph architectures is concentrated on temperature and humidity, not the harder atmospheric-state variables."_
 
 Full tables + skill scores per variable: [results/baselines/SUMMARY.md](baselines/SUMMARY.md) and [results/baselines/skill_scores.json](baselines/skill_scores.json). Computed from a single seed-independent baseline run (baselines have no parameters), so these numbers do not change as more Phase-2 seeds land.
 
@@ -183,7 +183,7 @@ Full tables + skill scores per variable: [results/baselines/SUMMARY.md](baseline
 
 ### Per-model notes
 - Tier 2 of the two-tier ranking (see F2). Worst performer in the matrix on every variable.
-- **Highest seed-to-seed variance of any model** — std of 0.204°C on t2m vs 0.002°C for ClimODE (100× larger).
+- **Highest seed-to-seed variance of any model** — std of 0.204°C on t2m vs 0.002°C for ClimODE-inspired (100× larger).
 - Fastest to early-stop in production runs (3–6 hours per seed) — model converges quickly with patience=15.
 - NRMSE at H=0 (0.523) substantially higher than other models — AGCRN starts off worse and the gap doesn't fully close at long horizons.
 
@@ -209,7 +209,7 @@ Full tables + skill scores per variable: [results/baselines/SUMMARY.md](baseline
 
 ### Per-model notes
 - **Best in matrix on every variable** (see F2). Tier 1 winner.
-- **Second-tightest variance in the matrix** — std of 0.006°C on t2m (only ClimODE tighter at 0.002). ~35× more reproducible than AGCRN.
+- **Second-tightest variance in the matrix** — std of 0.006°C on t2m (only ClimODE-inspired tighter at 0.002). ~35× more reproducible than AGCRN.
 - Training duration ~15–16h per seed (between AGCRN's 3h and MTGODE's 8h).
 
 ### Known issues / fixes applied
@@ -226,7 +226,7 @@ Full tables + skill scores per variable: [results/baselines/SUMMARY.md](baseline
 
 ### Completed seeds at 999 nodes (n=10, COMPLETE)
 - seeds 42–51 — all completed (seed 49 required a resubmit with `epochs: 50` cap because the default `epochs: 100` timed out at epoch 76 — one exchangeability caveat, though MTGODE's VPT=0 outcome is unchanged either way)
-- **VPT = 0 on every variable for every seed** — first-step forecast already exceeds ε=0.3. This is the sharpest negative result for the continuous-time hypothesis: MTGODE is CT but shows no VPT advantage over discrete-time AGCRN. Only ClimODE (CT + geometry-aware) shows VPT>0, so the effect is entangled with the geometric prior. See F1's nuance paragraph.
+- **VPT = 0 on every variable for every seed** — first-step forecast already exceeds ε=0.3. This is the sharpest negative result for the continuous-time hypothesis: MTGODE is CT but shows no VPT advantage over discrete-time AGCRN. Only ClimODE-inspired (CT + geometry-aware) shows VPT>0, so the effect is entangled with the geometric prior. See F1's nuance paragraph.
 
 ### Metrics (mean ± std across n=10 seeds, physical units)
 | Variable | MAE | NRMSE (H=0, seed 42) |
@@ -242,13 +242,15 @@ Full tables + skill scores per variable: [results/baselines/SUMMARY.md](baseline
 
 ### Per-model notes
 - **MTGODE outperforms AGCRN on every variable** (10–25% lower MAE). Tier 2 leader.
-- **Outperformed by both CLCRN (~47% lower MAE) and ClimODE (~30% lower MAE)** — Tier 2 of the two-tier ranking (see F2).
+- **Outperformed by both CLCRN (~47% lower MAE) and ClimODE-inspired (~30% lower MAE)** — Tier 2 of the two-tier ranking (see F2).
 - Seeds 42–47 within ~3% on every metric — variance consistent with other Tier 2 models.
 - Training duration variable across seeds (5–10h) — early stopping at different epochs.
 
 ---
 
-## ClimODE
+## ClimODE-inspired
+
+> ⚠️ **Naming note (2026-07-26):** This model is **NOT** the ClimODE architecture from Verma et al. (ICLR 2024). The paper's ClimODE has a flow-velocity network combining local convolutions with long-range attention, a Gaussian emission network for uncertainty quantification, and a second-order neural continuity equation solved as a system of neural ODEs over a gridded globe. What we built is a hand-written advection graph ODE that borrows the *core advection idea* only — no attention, no emission model, no uncertainty quantification, ~17K params vs the paper's several million. We keep the CLI/code identifier `climode` for backwards-compatibility with existing runs and the results archive, but every human-facing document, table, and citation refers to this as "ClimODE-inspired" for truth in labeling. The upstream ClimODE repo is checked out at `models/continuous_time/ClimODE/` as reference material only; no code from it is imported. Full architectural details and the WHY of this naming decision are in [climode_model.py](../../models/continuous_time/climode_model.py) header. Cite Verma et al. as inspiration for the advection PDE formulation.
 
 ### Completed seeds at 999 nodes (n=10, COMPLETE)
 - seeds 42–51 — all at `epochs: 30` cap (the lowered config; details in DECISION RECORD below)
@@ -276,13 +278,13 @@ Full tables + skill scores per variable: [results/baselines/SUMMARY.md](baseline
 
 ### Configuration: `epochs: 30` cap (DECISION RECORD)
 
-After two independent timeouts (seeds 42 and 43 hit the 24h SLURM wall at epoch 37–38 under `epochs: 40`), the cap was lowered to `epochs: 30` in [experiments/configs/climode.yaml](experiments/configs/climode.yaml#L15). All 10 ClimODE seeds are being run homogeneously with epochs=30 for matrix consistency. **Seeds 42 and 43 successfully completed under the new config (18h40m and 19h01m) — the fix is verified.**
+After two independent timeouts (seeds 42 and 43 hit the 24h SLURM wall at epoch 37–38 under `epochs: 40`), the cap was lowered to `epochs: 30` in [experiments/configs/climode.yaml](experiments/configs/climode.yaml#L15). All 10 ClimODE-inspired seeds are being run homogeneously with epochs=30 for matrix consistency. **Seeds 42 and 43 successfully completed under the new config (18h40m and 19h01m) — the fix is verified.**
 
 ### Paper paragraph (paste-ready, corrected 2026-07-19)
 
 **Correction from earlier version:** The previous paragraph implied all four models sat inside Gaibie's {20, 30, 40} range. That was inaccurate. The actual per-model configuration is heterogeneous because per-epoch cost differs by an order of magnitude across architectures, and the cluster's 24-hour job wall is a hard cap that cannot be extended. The framing below is honest about that heterogeneity and pins the defense on best-validation-checkpoint selection plus the observation that the models with *larger* budgets are the ones that lost — so cap asymmetry cannot explain the Tier-1 win.
 
-> All models were trained under best-validation-checkpoint selection (Goodfellow et al., 2016) with a maximum-epoch cap set per model by per-epoch wall-clock cost against the cluster's 24-hour job limit. AGCRN, CLCRN, and MTGODE were capped at 100 epochs with early-stopping patience 15 — well above Gaibie et al.'s (2024) {20, 30, 40} range and never binding in practice: all seeds early-stop by epoch 45–52. ClimODE, whose adaptive ODE solver requires ≈38 min/epoch at 999 nodes, was capped at 30 epochs; its validation loss plateaus by epoch 25 (Δ<0.5% between epochs 25 and 37, below observed seed-to-seed variance), confirming the cap does not truncate convergence. One MTGODE seed (49) required a 50-epoch cap after its 100-epoch run timed out at epoch 76 — a single-seed exception that does not affect MTGODE's Tier-2 placement (VPT=0 outcome is unchanged; the reported metrics use its best-val checkpoint). For Phase-2 classification, CLCRN's configuration was tightened to 60 epochs after one seed (44) hit the 24h wall; we verified that CLCRN classification seeds 42/43/45 (run under the earlier 100-cap) all reached best-val at epoch 30, well below the tightened cap, so the retries are exchangeable with the pre-fix seeds. Critically, the models given the *largest* epoch budgets (AGCRN, MTGODE at cap 100) placed last in the ranking; cap asymmetry therefore cannot explain the Tier-1 win. An analogous 24-hour-compute-driven configuration constraint is reported by Ayers et al.
+> All models were trained under best-validation-checkpoint selection (Goodfellow et al., 2016) with a maximum-epoch cap set per model by per-epoch wall-clock cost against the cluster's 24-hour job limit. AGCRN, CLCRN, and MTGODE were capped at 100 epochs with early-stopping patience 15 — well above Gaibie et al.'s (2024) {20, 30, 40} range and never binding in practice: all seeds early-stop by epoch 45–52. ClimODE-inspired, whose adaptive ODE solver requires ≈38 min/epoch at 999 nodes, was capped at 30 epochs; its validation loss plateaus by epoch 25 (Δ<0.5% between epochs 25 and 37, below observed seed-to-seed variance), confirming the cap does not truncate convergence. One MTGODE seed (49) required a 50-epoch cap after its 100-epoch run timed out at epoch 76 — a single-seed exception that does not affect MTGODE's Tier-2 placement (VPT=0 outcome is unchanged; the reported metrics use its best-val checkpoint). For Phase-2 classification, CLCRN's configuration was tightened to 60 epochs after one seed (44) hit the 24h wall; we verified that CLCRN classification seeds 42/43/45 (run under the earlier 100-cap) all reached best-val at epoch 30, well below the tightened cap, so the retries are exchangeable with the pre-fix seeds. Critically, the models given the *largest* epoch budgets (AGCRN, MTGODE at cap 100) placed last in the ranking; cap asymmetry therefore cannot explain the Tier-1 win. An analogous 24-hour-compute-driven configuration constraint is reported by Ayers et al.
 
 **Per-model epoch configuration summary:**
 
@@ -291,7 +293,7 @@ After two independent timeouts (seeds 42 and 43 hit the 24h SLURM wall at epoch 
 | AGCRN | epochs_cap=100, patience=15 | epochs_cap=100, patience=15 | Early-stops well before cap |
 | CLCRN | epochs_cap=100, patience=15 | seeds 42/43/45: 100; seeds 44+: 60 | 60-cap after seed 44 timeout; verified best-val at ep 30 for existing seeds |
 | MTGODE | epochs_cap=100, patience=15 | epochs_cap=100, patience=15 | Seed 49 alone at cap=50 (Phase 1) after 100-cap timeout |
-| ClimODE | epochs_cap=30, patience=15 | epochs_cap=30, patience=15 | Convergence plateau at ep 25 confirmed empirically |
+| ClimODE-inspired | epochs_cap=30, patience=15 | epochs_cap=30, patience=15 | Convergence plateau at ep 25 confirmed empirically |
 
 ### Methodology references
 
@@ -301,7 +303,7 @@ After two independent timeouts (seeds 42 and 43 hit the 24h SLURM wall at epoch 
 - **Ayers et al.** (Local Lyapunov Exponents paper) — direct in-lineage precedent: their first six-layer LSTM HPO attempt exceeded Google Colab's 24-hour wall, and they use early-stopping with best-validation-checkpoint selection. Cite as precedent for compute-ceiling-driven config choices.
 - **MLCommons CloudMask** — HPC-scale benchmark introducing seeds + early stopping + best-validation-run reporting.
 
-### Convergence evidence (from ClimODE seed 42 train.log, prior epochs=40 run)
+### Convergence evidence (from ClimODE-inspired seed 42 train.log, prior epochs=40 run)
 
 | Epoch | val_loss | Δ from epoch 37 best |
 |-------|----------|----------------------|
@@ -315,28 +317,28 @@ Convergence is effectively reached by epoch 30. The 0.2% gap is below seed-to-se
 
 ### Scheduler / cosine restart note
 
-ClimODE uses `CosineAnnealingWarmRestarts` with `T_0=10, T_mult=2`. Cycle boundaries: epoch 10 (end cycle 1), epoch 30 (end cycle 2), epoch 70 (end cycle 3). **`epochs=30` lands the final training epoch exactly at a cosine minimum** — the model finishes in its low-LR settled state. Confirmed empirically in the prior train.log: epoch 31 shows the expected LR-restart bump (train loss 0.297→0.299, grad norm 0.36→0.44).
+ClimODE-inspired uses `CosineAnnealingWarmRestarts` with `T_0=10, T_mult=2`. Cycle boundaries: epoch 10 (end cycle 1), epoch 30 (end cycle 2), epoch 70 (end cycle 3). **`epochs=30` lands the final training epoch exactly at a cosine minimum** — the model finishes in its low-LR settled state. Confirmed empirically in the prior train.log: epoch 31 shows the expected LR-restart bump (train loss 0.297→0.299, grad norm 0.36→0.44).
 
-### Phase 2 follow-up: switch ClimODE to fixed-step ODE solver
+### Phase 2 follow-up: switch ClimODE-inspired to fixed-step ODE solver
 
-ClimODE uses adaptive `dopri5` ([experiments/configs/climode.yaml](experiments/configs/climode.yaml#L25)); MTGODE uses fixed-step Euler/RK4 with step size 0.25. The adaptive solver's step count balloons at 999 nodes, explaining the ~38 min/epoch vs MTGODE's ~10–20 min/epoch.
+ClimODE-inspired uses adaptive `dopri5` ([experiments/configs/climode.yaml](experiments/configs/climode.yaml#L25)); MTGODE uses fixed-step Euler/RK4 with step size 0.25. The adaptive solver's step count balloons at 999 nodes, explaining the ~38 min/epoch vs MTGODE's ~10–20 min/epoch.
 
 **Proposed Phase 2 change** (not for current matrix):
-1. Switch ClimODE to fixed-step solver
+1. Switch ClimODE-inspired to fixed-step solver
 2. Run 1 validation seed to confirm accuracy doesn't degrade
-3. If validation seed is comparable, re-run all 10 ClimODE seeds with fixed-step at the full `epochs: 40` budget (now ~16h per seed instead of timing out)
+3. If validation seed is comparable, re-run all 10 ClimODE-inspired seeds with fixed-step at the full `epochs: 40` budget (now ~16h per seed instead of timing out)
 
 **Benefits:**
 - Allows full 40-epoch training within 24h budget (matches Gaibie's protocol exactly)
-- Aligns ClimODE's integration scheme with MTGODE's → makes the CT-vs-CT comparison more apples-to-apples
-- Removes the only methodological footnote in the ClimODE block
+- Aligns ClimODE-inspired's integration scheme with MTGODE's → makes the CT-vs-CT comparison more apples-to-apples
+- Removes the only methodological footnote in the ClimODE-inspired block
 
 **Cost:**
 - ~16h GPU for the validation seed
 - If accepted, ~160h to rerun all 10 (replacing the current 30-epoch results)
 - Slight reduction in "continuous-time purity" claim (but MTGODE makes the same trade)
 
-**Decision threshold:** if the epochs=30 results show ClimODE underperforming AGCRN/MTGODE by margins that could be explained by the cap, run this Phase 2 fix. If ClimODE is competitive at epochs=30, leave it.
+**Decision threshold:** if the epochs=30 results show ClimODE-inspired underperforming AGCRN/MTGODE by margins that could be explained by the cap, run this Phase 2 fix. If ClimODE-inspired is competitive at epochs=30, leave it.
 
 ---
 

@@ -1,14 +1,24 @@
 """
-Model wrapper for ClimODE (Climate and Weather Forecasting with Physics-informed Neural ODEs).
+Model wrapper — "ClimODE-inspired" advection graph-ODE.
 
-Cloned repo: models/continuous_time/ClimODE/
+⚠️ IMPORTANT NAMING NOTE (2026-07-26):
+This is NOT the ClimODE architecture from Verma et al. (ICLR 2024). The
+upstream repo is checked out at models/continuous_time/ClimODE/ but NO code
+from it is imported here. Verma et al.'s architecture has a flow-velocity
+network with local convs + long-range attention, a Gaussian emission network
+for uncertainty quantification, and a second-order neural continuity equation
+over a gridded globe — none of which is implemented here.
 
-ClimODE's original architecture is designed for gridded ERA5 data (2D spatial
-H×W grids) using torch.gradient() for advection. That spatial structure is
-incompatible with our graph-based N-node format.
+This module implements a much simpler hand-written advection graph-ODE (~17K
+params vs the paper's several million) that borrows the core advection idea
+and skips the emission/attention components. In papers, results docs, and
+citations, refer to it as "ClimODE-inspired" or an "advection-motivated graph
+ODE" — not "ClimODE". Cite Verma et al. as inspiration for the advection PDE
+formulation.
 
-This wrapper implements the core ClimODE idea — physics-inspired advection ODE
-integrated with torchdiffeq — adapted for graph-structured station data:
+Cloned repo: models/continuous_time/ClimODE/ (reference material only, unused)
+
+The dynamics function:
 
   dX/dt = -gate(X) ⊙ (A · X) + emission(X)
 

@@ -21,7 +21,7 @@ Every model we compare shares: the same preprocessed input tensors, the same tra
 | Family | Models | Workstream |
 |---|---|---|
 | Baselines | AGCRN, CLCRN | shared |
-| Continuous-time | MTGODE, ClimODE | Praise |
+| Continuous-time | MTGODE, ClimODE-inspired | Praise |
 | Lightweight | STLGRU, Lite-STGNN | Zoleka |
 | Diffusion | DiffSTG, USTD | Génevieve |
 
@@ -71,7 +71,7 @@ Results are cached to `preprocessing/cache/` with hash-based invalidation — th
 - AGCRN adapter and model wrapper (including a fix for uninitialized weights in the upstream repo that caused NaN training — see below)
 - CLCRN adapter and model wrapper (including a NumPy 2.x compatibility patch for the upstream repo)
 
-Continuous-time, lightweight, and diffusion adapters exist as stubs — they import cleanly and raise `NotImplementedError` from `build_model()`. The shared ODE integrator (`ode_integrator.py`) that MTGODE and ClimODE both need is also implemented.
+Continuous-time, lightweight, and diffusion adapters exist as stubs — they import cleanly and raise `NotImplementedError` from `build_model()`. The shared ODE integrator (`ode_integrator.py`) that MTGODE and ClimODE-inspired both need is also implemented.
 
 **CLI and Makefile** — fully implemented. See the Makefile section below.
 
@@ -84,7 +84,7 @@ Continuous-time, lightweight, and diffusion adapters exist as stubs — they imp
 | Item | Owner | Notes |
 |---|---|---|
 | MTGODE adapter | Praise | `mtgode_adapter.py` is a stub |
-| ClimODE adapter | Praise | `climode_adapter.py` is a stub |
+| ClimODE-inspired adapter | Praise | `climode_adapter.py` is a stub |
 | STLGRU adapter | Zoleka | `stlgru_adapter.py` is a stub |
 | Lite-STGNN adapter | Zoleka | `litestgnn_adapter.py` is a stub |
 | DiffSTG adapter | Génevieve | `diffstg_adapter.py` is a stub |
@@ -259,7 +259,7 @@ WeatherFLOW/
 │   ├── base_adapter.py         ← abstract interface all adapters implement
 │   ├── shared_modules/         ← graph utilities shared across model families
 │   ├── baselines/              ← AGCRN, CLCRN + their cloned repos
-│   ├── continuous_time/        ← MTGODE, ClimODE + shared ODE integrator (Praise)
+│   ├── continuous_time/        ← MTGODE, ClimODE-inspired + shared ODE integrator (Praise)
 │   ├── lightweight/            ← STLGRU, Lite-STGNN (Zoleka)
 │   └── diffusion/              ← DiffSTG, USTD + shared denoising module (Génevieve)
 ├── training/                   ← trainer, losses, scheduler, seed

@@ -6,7 +6,7 @@
 
 | Teammate | Models | Status |
 |----------|--------|--------|
-| **Praise** | AGCRN, CLCRN, MTGODE, ClimODE | ✅ Phase 1 complete (40/40 seeds), Phase 2 in progress (19/40 so far) |
+| **Praise** | AGCRN, CLCRN, MTGODE, ClimODE-inspired | ✅ Phase 1 complete (40/40 seeds), Phase 2 in progress (19/40 so far) |
 | **Zoleka** | STLGRU, Lite-STGNN | ✅ Adapters landed and smoke-tested at N=100; production runs pending |
 | **Génevieve** | DiffSTG, USTD | Maintained in Génevieve's own forks — integrate via `genevieve/` scratch dir |
 
@@ -60,7 +60,7 @@ Our HPO for AGCRN and CLCRN comes from Gaibie et al. (2024). We differ from thei
 
 > *"We depart from Gaibie et al. (2024) in two ways. First, we use an 8-variable input feature set from ERA5 reanalysis at 999 grid points rather than the 6-attribute SAWS dataset at 45 stations, adding 2m dewpoint and encoding wind as u/v components. Second, we train each architecture as a single multi-output model predicting all 8 variables jointly, rather than Gaibie's 4 target-specialised models per architecture. This multi-task formulation is compute-tractable within our 10-seed Wilcoxon protocol and follows the multi-output convention of contemporary station-forecasting STGNN work. Headline results are reported on Gaibie's 4 primary target variables (temperature, humidity, wind speed, surface pressure) for direct comparability; the full 8-variable table is in Appendix X. Absolute MAE/RMSE values are not directly comparable to Gaibie's Table 2 due to the single-target-vs-multi-task divergence; our architectural ranking is."*
 
-**Ranking discrepancy to acknowledge — don't hide.** Gaibie found AGCRN best on 3 of 4 targets (CLCRN wins pressure). We find CLCRN > ClimODE > MTGODE > AGCRN in both regression (Phase 1) and classification (Phase 2), with AGCRN clearly worst. The reversal is *real* and *interpretable*: single-target training gives AGCRN's adaptive-graph capacity room to specialise; multi-task training rewards CLCRN's geometry-aware inductive bias more. Publish that observation.
+**Ranking discrepancy to acknowledge — don't hide.** Gaibie found AGCRN best on 3 of 4 targets (CLCRN wins pressure). We find CLCRN > ClimODE-inspired > MTGODE > AGCRN in both regression (Phase 1) and classification (Phase 2), with AGCRN clearly worst. The reversal is *real* and *interpretable*: single-target training gives AGCRN's adaptive-graph capacity room to specialise; multi-task training rewards CLCRN's geometry-aware inductive bias more. Publish that observation.
 
 **Headline metrics filter** — [evaluation/regression.py](../evaluation/regression.py) `REPORT_VARS = ["t2m", "rh", "ws10", "sp"]` matches Gaibie's 4 targets exactly; the paper's headline tables should use this filter.
 
@@ -164,7 +164,7 @@ Take these from an external HPO source (Gaibie et al. 2024 has HPO for AGCRN/CLC
 | AGCRN | 0.01 | 64 | 100 | 64 | Gaibie et al. (2024) HPO |
 | CLCRN | 0.001 | 32 | 100 (regression), 60 (Phase-2 classification) | 64 | Gaibie et al. (2024) HPO; classification cap after seed 44 timeout |
 | MTGODE | 0.001 | 32 | 100 | 40 | Upstream paper defaults; seed 49 exception at cap=50 |
-| ClimODE | 0.0005 | 16 | 30 | 64 | Adaptive ODE solver → 38 min/epoch at N=999 forces low cap |
+| ClimODE-inspired | 0.0005 | 16 | 30 | 64 | Adaptive ODE solver → 38 min/epoch at N=999 forces low cap |
 | STLGRU | 0.001 | 64 | 100 | 32 | Larger batch OK due to small model |
 | Lite-STGNN | 0.001 | 64 | 100 | 32 | 6.9K params — extremely light |
 
@@ -190,7 +190,7 @@ You have three paths, listed in order of ease. Pick the one that matches your mo
 
 **Path A — vendored submodule + adapter (recommended, matches all existing models).** Add the upstream paper repo as a `git submodule` under `models/<family>/<REPO_NAME>/`, then write a thin adapter that imports from it. Keeps the upstream code pristine — you can bump submodule pins to track upstream, and your adapter is the ONLY file you write. All 6 current models follow this pattern.
 
-**Path B — reimplementation (if upstream doesn't fit graph/station format).** If the upstream code assumes gridded data (e.g. ClimODE was designed for 2D H×W grids) or has hard-coded assumptions that don't survive a graph adaptation, write a clean reimplementation under `models/<family>/<name>_model.py`. Cite the paper and document the adaptation. Praise's [climode_model.py](../models/continuous_time/climode_model.py) is the reference example.
+**Path B — reimplementation (if upstream doesn't fit graph/station format).** If the upstream code assumes gridded data (e.g. ClimODE-inspired was designed for 2D H×W grids) or has hard-coded assumptions that don't survive a graph adaptation, write a clean reimplementation under `models/<family>/<name>_model.py`. Cite the paper and document the adaptation. Praise's [climode_model.py](../models/continuous_time/climode_model.py) is the reference example.
 
 **Path C — external fork (Génevieve's current path).** Maintain your model repo separately. When you're ready to pop it in, follow Path A or B. In the meantime, use `genevieve/` as your scratch space in the main repo for integration scripts, notebooks, and drafts.
 
@@ -274,7 +274,7 @@ class AGCRNAdapter(BaseAdapter):
         return sum(p.numel() for p in self.model.parameters() if p.requires_grad)
 ```
 
-That's the whole thing. If your model is more complex (e.g. ClimODE has ODE solver tolerances that differ between train and eval), put that logic inside `forward` / `predict` — see [climode_adapter.py](../models/continuous_time/climode_adapter.py).
+That's the whole thing. If your model is more complex (e.g. ClimODE-inspired has ODE solver tolerances that differ between train and eval), put that logic inside `forward` / `predict` — see [climode_adapter.py](../models/continuous_time/climode_adapter.py).
 
 ### 5.4 Integration checklist
 

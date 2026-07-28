@@ -2,7 +2,7 @@
 
 Everything you need for post-analysis and the paper write-up lives here. No source code, no checkpoints — just measurements, plots, and the docs describing what happened.
 
-**Scope:** this archive tracks results for **Praise's four models only** — the **baselines** (AGCRN, CLCRN) and the **continuous-time** family (MTGODE, ClimODE). Teammates run and track their own models independently: Zoleka owns STLGRU + Lite-STGNN (lightweight); Génevieve owns DiffSTG + USTD (diffusion). RESEARCH_FINDINGS still contains context sections for those models — treat those as background, not archive results.
+**Scope:** this archive tracks results for **Praise's four models only** — the **baselines** (AGCRN, CLCRN) and the **continuous-time** family (MTGODE, ClimODE-inspired). Teammates run and track their own models independently: Zoleka owns STLGRU + Lite-STGNN (lightweight); Génevieve owns DiffSTG + USTD (diffusion). RESEARCH_FINDINGS still contains context sections for those models — treat those as background, not archive results.
 
 ## Structure
 
@@ -62,14 +62,14 @@ results/
 ## Headline results
 
 **Phase 1 (regression, n=10 per model, COMPLETE):** see [plots/SUMMARY.md](plots/SUMMARY.md).  
-Ranking on t2m MAE: **CLCRN (1.17) < ClimODE (1.57) < MTGODE (2.19) < AGCRN (2.85)**. All six pairwise Wilcoxons hit p = 0.00195 (theoretical floor at n=10).
+Ranking on t2m MAE: **CLCRN (1.17) < ClimODE-inspired (1.57) < MTGODE (2.19) < AGCRN (2.85)**. All six pairwise Wilcoxons hit p = 0.00195 (theoretical floor at n=10).
 
 **Phase 2 (classification, in progress):** see [phase2_classification/STATUS.md](phase2_classification/STATUS.md).  
-Same ranking is replicating: **CLCRN (F1=0.71) > ClimODE (0.64) > MTGODE (0.51) > AGCRN (0.31)**.
+Same ranking is replicating: **CLCRN (F1=0.71) > ClimODE-inspired (0.64) > MTGODE (0.51) > AGCRN (0.31)**.
 
-**The story:** geometry-aware architectures (CLCRN, ClimODE) beat generic-graph architectures (MTGODE, AGCRN) by 40–60%, consistently across both regression and classification, with 10–100× smaller seed-to-seed variance. See [analysis/RESEARCH_FINDINGS.md](analysis/RESEARCH_FINDINGS.md) F2 for the full argument.
+**The story:** geometry-aware architectures (CLCRN, ClimODE-inspired) beat generic-graph architectures (MTGODE, AGCRN) by 40–60%, consistently across both regression and classification, with 10–100× smaller seed-to-seed variance. See [analysis/RESEARCH_FINDINGS.md](analysis/RESEARCH_FINDINGS.md) F2 for the full argument.
 
-**Baseline defence:** all four models comprehensively beat the climatology baseline. CLCRN and ClimODE additionally beat the persistence baseline on every variable; MTGODE and AGCRN lose to persistence on surface pressure and dew point (further tier evidence). See [baselines/SUMMARY.md](baselines/SUMMARY.md) for the full skill-score tables and paste-ready paper paragraphs.
+**Baseline defence:** all four models comprehensively beat the climatology baseline. CLCRN and ClimODE-inspired additionally beat the persistence baseline on every variable; MTGODE and AGCRN lose to persistence on surface pressure and dew point (further tier evidence). See [baselines/SUMMARY.md](baselines/SUMMARY.md) for the full skill-score tables and paste-ready paper paragraphs.
 
 ## What's included / excluded
 
