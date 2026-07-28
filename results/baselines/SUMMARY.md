@@ -14,7 +14,6 @@ _Persistence and climatology reference forecasts, with skill scores for each of 
 | Model | t2m | d2m | tp | u10 | v10 | sp | ws10 | rh |
 |-------|---|---|---|---|---|---|---|---|
 | clcrn | 0.933 | 0.573 | 0.678 | 0.758 | 0.757 | 0.805 | 0.719 | 0.880 |
-| climode | 0.886 | 0.256 | 0.587 | 0.491 | 0.441 | 0.537 | 0.461 | 0.793 |
 | mtgode | 0.777 | -0.040 | 0.580 | 0.348 | 0.299 | -0.116 | 0.347 | 0.679 |
 | agcrn | 0.637 | -0.567 | 0.514 | -0.141 | -0.135 | -1.093 | 0.022 | 0.494 |
 
@@ -23,7 +22,6 @@ _Persistence and climatology reference forecasts, with skill scores for each of 
 | Model | t2m | d2m | tp | u10 | v10 | sp | ws10 | rh |
 |-------|---|---|---|---|---|---|---|---|
 | clcrn | 0.933 | 0.911 | 0.577 | 0.868 | 0.867 | 0.967 | 0.775 | 0.880 |
-| climode | 0.885 | 0.844 | 0.457 | 0.724 | 0.694 | 0.921 | 0.569 | 0.792 |
 | mtgode | 0.776 | 0.782 | 0.448 | 0.646 | 0.617 | 0.810 | 0.478 | 0.678 |
 | agcrn | 0.635 | 0.672 | 0.361 | 0.381 | 0.379 | 0.644 | 0.218 | 0.492 |
 
@@ -44,8 +42,6 @@ _Persistence and climatology reference forecasts, with skill scores for each of 
 |-------|----------|---|---|---|---|---|---|
 | clcrn | persistence | +0.426 | +0.087 | +0.145 | +0.274 | +0.275 | +0.139 |
 | clcrn | climatology | +0.802 | +0.757 | +0.536 | +0.638 | +0.636 | +0.898 |
-| climode | persistence | +0.361 | +0.025 | +0.063 | +0.147 | +0.211 | +0.103 |
-| climode | climatology | +0.736 | +0.695 | +0.454 | +0.511 | +0.572 | +0.863 |
 | mtgode | persistence | +0.206 | -0.129 | -0.015 | +0.043 | +0.090 | -0.054 |
 | mtgode | climatology | +0.582 | +0.540 | +0.377 | +0.408 | +0.451 | +0.705 |
 | agcrn | persistence | -0.079 | -0.307 | -0.166 | -0.165 | -0.119 | -0.292 |
@@ -57,8 +53,6 @@ _Persistence and climatology reference forecasts, with skill scores for each of 
 |-------|----------|---|---|---|---|---|---|
 | clcrn | persistence | +0.325 | +0.163 | +0.272 | +0.304 | +0.309 | +0.125 |
 | clcrn | climatology | +0.496 | +0.499 | +0.446 | +0.469 | +0.471 | +0.500 |
-| climode | persistence | +0.317 | +0.155 | +0.238 | +0.262 | +0.293 | +0.123 |
-| climode | climatology | +0.488 | +0.491 | +0.413 | +0.426 | +0.455 | +0.498 |
 | mtgode | persistence | +0.287 | +0.129 | +0.192 | +0.227 | +0.254 | +0.109 |
 | mtgode | climatology | +0.459 | +0.465 | +0.367 | +0.391 | +0.416 | +0.484 |
 | agcrn | persistence | +0.148 | +0.067 | +0.080 | +0.048 | +0.108 | +0.055 |
@@ -73,11 +67,9 @@ _Persistence and climatology reference forecasts, with skill scores for each of 
 
 ## Findings
 
-**Every model beats climatology on every variable.** The climatology baseline (constant per-station mean) is the true floor — all 4 models pass it. This defends every headline claim in the paper.
+**Every model beats climatology on every variable.** The climatology baseline (constant per-station mean) is the true floor — all 3 live-matrix models pass it. This defends every headline claim in the paper. (ClimODE-inspired was archived on 2026-07-28 pending faithful reimplementation — see results/archive/climode_inspired/. `climode_faithful` will rejoin this list once its runs land.)
 
 **CLCRN beats persistence on every variable** (regression + classification).
-
-**CLIMODE beats persistence on every variable** (regression + classification).
 
 **MTGODE loses to persistence on some variables:** regression MSSS negative on d2m, sp; classification F1 loses to persistence on d2m, tp, sp. Still beats climatology comprehensively.
 
@@ -87,7 +79,7 @@ _Persistence and climatology reference forecasts, with skill scores for each of 
 
 **Version 1 — headline sentence (safe):**
 
-> _"All four models — AGCRN, CLCRN, ClimODE-inspired, and MTGODE — comprehensively outperform the climatology baseline across all reported variables. CLCRN and ClimODE-inspired additionally beat the persistence baseline on every variable, whereas MTGODE and AGCRN lose to persistence on surface pressure and near-surface dew point — a further indication of the tier structure identified in F2."_
+> _"All three live-matrix models — AGCRN, CLCRN, and MTGODE — comprehensively outperform the climatology baseline across all reported variables. CLCRN additionally beats the persistence baseline on every variable, whereas MTGODE and AGCRN lose to persistence on surface pressure and near-surface dew point — a further indication of the tier structure identified in F2. (A faithful reimplementation of ClimODE (Verma et al., ICLR 2024) is in progress under the `climode_faithful` integration; the archived 'ClimODE-inspired' results are documented in results/archive/climode_inspired/PROVENANCE.md.)"_
 
 **Version 2 — sharper story (recommended for the paper):**
 

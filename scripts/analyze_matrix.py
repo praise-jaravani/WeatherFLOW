@@ -37,14 +37,17 @@ from scipy import stats
 REPO = Path(__file__).resolve().parent.parent
 
 REGRESSION_VARS = ["t2m", "d2m", "tp", "u10", "v10", "sp", "ws10", "rh"]
-MODEL_ORDER = ["agcrn", "clcrn", "mtgode", "climode"]
+# climode (the "ClimODE-inspired" advection graph-ODE) archived on 2026-07-28
+# pending faithful reimplementation — see results/archive/climode_inspired/.
+# climode_faithful joins this list once its production runs land.
+MODEL_ORDER = ["agcrn", "clcrn", "mtgode"]
 
 RUN_DIR_RE = re.compile(
-    r"(?P<model>agcrn|clcrn|mtgode|climode)_era5_regression_(?P<ts>\d{8})_(?P<hms>\d{6})"
+    r"(?P<model>agcrn|clcrn|mtgode|climode|climode_faithful)_era5_regression_(?P<ts>\d{8})_(?P<hms>\d{6})"
 )
 
 RUN_DIR_RE_CLASSIFICATION = re.compile(
-    r"(?P<model>agcrn|clcrn|mtgode|climode)_era5_classification_(?P<ts>\d{8})_(?P<hms>\d{6})"
+    r"(?P<model>agcrn|clcrn|mtgode|climode|climode_faithful)_era5_classification_(?P<ts>\d{8})_(?P<hms>\d{6})"
 )
 
 # Phase-2 metric set (see evaluation/classification.py). See §4 of the plan.

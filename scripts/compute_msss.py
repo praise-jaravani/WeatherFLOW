@@ -25,7 +25,11 @@ import numpy as np
 RESULTS = Path(__file__).parent.parent / "results"
 BASELINES_DIR = RESULTS / "baselines"
 
-CORE_MODELS = ["clcrn", "climode", "mtgode", "agcrn"]
+CORE_MODELS = ["clcrn", "mtgode", "agcrn"]
+# NOTE: climode (the "ClimODE-inspired" advection graph-ODE) was archived on
+# 2026-07-28 pending faithful reimplementation. See
+# results/archive/climode_inspired/PROVENANCE.md. climode_faithful will
+# join this list once its production runs land.
 
 
 def load_json(p):
@@ -269,7 +273,8 @@ def write_summary_md(reg, cls):
         cls_wins_persist[model] = losses
 
     lines.append("\n## Findings\n\n")
-    lines.append("**Every model beats climatology on every variable.** The climatology baseline (constant per-station mean) is the true floor — all 4 models pass it. This defends every headline claim in the paper.\n\n")
+    n_models = len([m for m in CORE_MODELS if m in reg["models"]])
+    lines.append(f"**Every model beats climatology on every variable.** The climatology baseline (constant per-station mean) is the true floor — all {n_models} live-matrix models pass it. This defends every headline claim in the paper. (ClimODE-inspired was archived on 2026-07-28 pending faithful reimplementation — see results/archive/climode_inspired/. `climode_faithful` will rejoin this list once its runs land.)\n\n")
     for model in CORE_MODELS:
         losses_reg = reg_wins_persist.get(model, [])
         losses_cls = cls_wins_persist.get(model, [])
@@ -283,7 +288,7 @@ def write_summary_md(reg, cls):
 
     lines.append("## Paste-ready paragraphs for the paper\n\n")
     lines.append("**Version 1 — headline sentence (safe):**\n\n")
-    lines.append("> _\"All four models — AGCRN, CLCRN, ClimODE-inspired, and MTGODE — comprehensively outperform the climatology baseline across all reported variables. CLCRN and ClimODE-inspired additionally beat the persistence baseline on every variable, whereas MTGODE and AGCRN lose to persistence on surface pressure and near-surface dew point — a further indication of the tier structure identified in F2.\"_\n\n")
+    lines.append("> _\"All three live-matrix models — AGCRN, CLCRN, and MTGODE — comprehensively outperform the climatology baseline across all reported variables. CLCRN additionally beats the persistence baseline on every variable, whereas MTGODE and AGCRN lose to persistence on surface pressure and near-surface dew point — a further indication of the tier structure identified in F2. (A faithful reimplementation of ClimODE (Verma et al., ICLR 2024) is in progress under the `climode_faithful` integration; the archived 'ClimODE-inspired' results are documented in results/archive/climode_inspired/PROVENANCE.md.)\"_\n\n")
     lines.append("**Version 2 — sharper story (recommended for the paper):**\n\n")
     lines.append("> _\"Skill-score analysis (Murphy Skill Score against persistence and climatology baselines; see Table X) mirrors the tier structure of F2. The Tier-1 models (CLCRN, ClimODE-inspired) beat both baselines on every variable, with CLCRN cutting persistence MSE by 57–93% depending on the variable. The Tier-2 models pass the climatology floor but stall against persistence on surface pressure and dew point — a diagnostic result showing that the added value of the generic-graph architectures is concentrated on temperature and humidity, not the harder atmospheric-state variables.\"_\n\n")
     lines.append("Version 2 is the stronger paper narrative: it doesn't hide the Tier-2 persistence losses; it *uses* them to reinforce the tier finding.\n")

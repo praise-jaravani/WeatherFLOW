@@ -2,7 +2,7 @@
 
 Everything you need for post-analysis and the paper write-up lives here. No source code, no checkpoints — just measurements, plots, and the docs describing what happened.
 
-**Scope:** this archive tracks results for **Praise's four models only** — the **baselines** (AGCRN, CLCRN) and the **continuous-time** family (MTGODE, ClimODE-inspired). Teammates run and track their own models independently: Zoleka owns STLGRU + Lite-STGNN (lightweight); Génevieve owns DiffSTG + USTD (diffusion). RESEARCH_FINDINGS still contains context sections for those models — treat those as background, not archive results.
+**Scope:** this archive tracks results for **Praise's models** — the **baselines** (AGCRN, CLCRN) and the **continuous-time** family (MTGODE). The 4th continuous-time slot originally held the "ClimODE-inspired" advection graph-ODE; those runs have been **archived** at [archive/climode_inspired/](archive/climode_inspired/) pending a faithful reimplementation of Verma et al.'s ClimODE (tracked separately as `climode_faithful`). Teammates run and track their own models independently: Zoleka owns STLGRU + Lite-STGNN (lightweight); Génevieve owns DiffSTG + USTD (diffusion). RESEARCH_FINDINGS still contains context sections for those models — treat those as background, not archive results.
 
 ## Structure
 
