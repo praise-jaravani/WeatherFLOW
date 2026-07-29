@@ -1,20 +1,131 @@
-# climode_faithful integration — REPORT (paused at B.1)
+# climode_faithful integration — REPORT
 
 ## TL;DR
 
-**Part A (segmentation) is complete and committed on branch
-`climode-faithful` (8fc6010).** Live matrix now has 3 models; the
-archived "ClimODE-inspired" runs are documented under
-`results/archive/climode_inspired/PROVENANCE.md`.
+**Part A (segmentation) complete** — commit 8fc6010 on branch `climode-faithful`.
+**B.0 (grid regularity gate) PASSED** — commit 8d25700, 7 tests green.
+**B.1 (upstream study) complete** — `docs/FAITHFULNESS.md` covers the
+paper→upstream→our-integration-point checklist.
+**STOP-AND-ASK invoked and resolved (2026-07-28)** — decision recorded below.
+**B.2–B.5 in progress** — verifications done, vendoring next.
 
-**Part B (faithful integration) is PAUSED at B.1 for a STOP-AND-ASK
-decision.** The B.0 grid regularity gate passed cleanly. When I moved
-to studying upstream in B.1 I discovered a training-paradigm mismatch
-that falls under the mission brief's explicit STOP-AND-ASK list.
+## Decision received (2026-07-28)
 
-Per the brief: *"A reported blocker is a good outcome; a quiet
-workaround is the failure mode that caused this entire situation."* So
-this report exists.
+**Modified Option 2**: native-recipe training via a ClimODE-private
+dataloader (calendar-aligned batches, ~15 training years, at **1h
+resolution**), evaluated under the standard WeatherFLOW sliding-window
+contract.
+
+**Reframe that dissolved the false dilemma**: the shared harness contract
+is data + splits + evaluation — training-time batching is model recipe.
+A ClimODE-private dataloader that builds calendar-aligned batches from
+the same train split forks nothing (no teammate code path touched) and
+invalidates nothing (no Phase-1 seeds affected). This is Option 2's
+harness-preserving half + Option 1's faithful-training half, at
+neither's original cost.
+
+## Verifications completed before writing code
+
+### V1: velocity estimation is Case (a) — precomputed fits, NOT co-optimized parameters
+
+Evidence:
+- `optimize_vel(...)` (utils.py:382) creates a **fresh** `Optim_velocity(num, H, W)`
+  per batch, fits it with its own `optim.Adam(lr=2)` for 200 steps,
+  returns best-loss `v_x, v_y`.
+- `fit_velocity(...)` (utils.py:411) saves the fitted velocities to
+  `.npy` (plain arrays, no gradient graph).
+- `train_region.py:99` creates the main optimizer with `model.parameters()`
+  ONLY — `Optim_velocity` is not in the optimizer's param groups.
+- `train_region.py:113,133` loads the `.npy` velocities as plain tensors
+  and passes them into `model.update_param([past_sample, ...])` where
+  they act as fixed inputs to the ODE, not learnable parameters.
+
+**Implication**: implementing the identical estimator per-window online
+(same Adam-fit of the same Eq. 10 loss with the same RBF prior on
+velocity smoothness) is a **bookkeeping change**, not a methodological
+substitution. PATCHES.md class: "indexing/caching change; estimator
+preserved."
+
+**Paper methods sentence** (record for later): *"Initial velocities are
+computed per sample by solving Verma et al.'s Eq. 10 estimator
+(penalised least-squares with an RBF-prior on spatial smoothness) using
+200 Adam steps on the input window's past frames; the estimator is
+identical to their pre-computed per-(year, day) fit, adapted to
+sliding-window inference."*
+
+### V2: boundary padding — regional path inherits circular longitude, correction required
+
+Evidence: `Self_attn_conv_reg` (the regional attention variant in
+`model_utils.py:58-81`) uses the same `boundarypad` module as the global
+path — reflect on latitude, **circular** on longitude. `ResidualBlock`
+(`model_utils.py:15-55`) does the same inline. Verified at lines 12, 48,
+51, 69, 72, 96.
+
+Circular longitude is a global-forecasting assumption; our SA bounded
+box (15°E–33°E) does not longitudinally wrap. Correction: **replace
+`boundarypad` with reflect-on-both-axes for our vendored regional
+variant.** Same pad shape and downstream conv machinery; only the
+longitude padding mode changes from `circular` → `reflect`.
+
+PATCHES.md disclosure: "Boundary padding: reflect on both axes —
+correction of a global-only assumption that leaks through the regional
+path unchanged in upstream code."
+
+## Resolution: 1-hour
+
+Train and evaluate at **1h resolution** under the standard 12h → 12h
+contract. Rationale: resolution is task, not method; every model in the
+matrix is retrained at task resolution; ClimODE is continuous-time and
+architecturally indifferent to sampling interval.
+
+Implementation:
+- ODE time coordinate rescaled from `t = 0.01 * timestep(6h)` →
+  `t = 0.01 * timestep(1h)`. Same "0.01 solver-unit per data timestep"
+  semantics; the data-timestep length changes.
+- ODE tolerances kept at upstream defaults on first pass; re-tune if
+  smoke reveals numerical issues.
+- Solver: upstream default (Euler for regional) as starting point;
+  reproduction precedent (github.com/tornikeo/climode-reproducibility)
+  used Euler at global scale on RTX 4090 24 GB — approved fallback.
+
+## PATCHES.md disclosure ledger (running)
+
+Will be written into `models/continuous_time/climode_faithful/PATCHES.md`
+as the vendored files land. Current entries:
+
+1. **Velocity computation**: per-window online Eq. 10 fit (Adam 200 steps
+   on the input window's past frames). Class: **indexing/caching change;
+   estimator preserved** (V1 above).
+2. **Task resolution**: 1h vs upstream 6h. Class: **task adaptation, not
+   method change** (decision above).
+3. **Boundary handling**: reflect-on-both-axes. Class: **correction of a
+   global-only assumption inapplicable to a bounded regional box** (V2
+   above).
+4. **K = 8 variables vs their K = 5** (t2m, d2m, tp, u10, v10, sp, ws10,
+   rh vs z, t, t2m, u10, v10). Class: **data-interface generalization,
+   config-only** (parameterizes `out_types=8` in the model constructor).
+5. **Solver config**: upstream defaults on first pass; will only appear
+   if changed post-smoke.
+
+## Non-goals reaffirmed
+
+- No touch of AGCRN / CLCRN / MTGODE code paths or their configs.
+- No changes to the shared preprocessing cache, splits, or
+  normalization.
+- No touch of the Phase-2 watcher, queue, or any HPC state.
+- No push, no merge.
+- Everything on branch `climode-faithful`.
+
+## Next actions
+
+- B.2: Vendor upstream under `models/continuous_time/climode_faithful/`
+  with `PATCHES.md` (this ledger, expanded per-file).
+- B.3: Adapter + config with `climode_faithful` registry key.
+- B.4: Tests (grid ✓; add: shape contract, initial-velocity, determinism,
+  overfit, checkpoint, metrics integration).
+- B.5: Local smoke on a cropped subgrid.
+- Prepared-but-unsubmitted `scripts/jobs/smoke_climode_faithful.sbatch`.
+- 999-node epoch-time projection for the Aug 5 gate (in this REPORT.md).
 
 ## What was completed
 

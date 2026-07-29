@@ -3,11 +3,26 @@
 Mapping Verma et al. (ICLR 2024) ClimODE → upstream code
 (`models/continuous_time/ClimODE/`) → our integration point.
 
-⚠️ **Status: DRAFT — integration paused at B.1 pending a STOP-AND-ASK
-decision.** See `docs/REPORT.md` under "Blocking discovery — training
-paradigm mismatch" for the blocker and options. This file records what
-was learned during the study phase so the decision can be made from
-evidence, not intuition.
+**Status: RESUMED at B.2 after DECISION (2026-07-28).** The mission
+brief's STOP-AND-ASK was invoked at end-of-B.1; decision came back:
+
+- **Modified Option 2**: native-recipe training via a ClimODE-private
+  dataloader (calendar-aligned batching, ~15 training years, at **1h
+  resolution**), evaluated under the standard WeatherFLOW sliding-window
+  contract. Shared harness contract = data + splits + evaluation, not
+  training-time batching. This forks no teammate code path and
+  invalidates no Phase-1 seeds.
+- **1h resolution** (train and eval): resolution is task, not method.
+  ClimODE is continuous-time and architecturally indifferent to sampling
+  interval — hourly queries are architecturally native.
+- **Velocity estimation**: verified to be Case (a) — precomputed Eq. 10
+  least-squares fits, not co-optimized parameters (see below). We
+  implement the identical estimator per-window online.
+- **Boundary padding**: verified — regional path inherits circular
+  longitude. Correction to reflect-on-both-axes required.
+
+See `docs/REPORT.md` for the decision record and PATCHES.md (once
+vendored) for the running deviation ledger.
 
 ## Upstream license
 
@@ -59,14 +74,36 @@ mismatches our harness · ❌ blocking mismatch · ➖ not yet examined.
 | Batching | batch = same day-of-year across all `num_years` years | our batch = random sliding-window samples | ❌ **BLOCKER** |
 | K variables | K=5 (`z`, `t`, `t2m`, `u10`, `v10`) | K=8 (t2m, d2m, tp, u10, v10, sp, ws10, rh) | ⚠️ trivial config change |
 
-### Initial-velocity inference (Eq. 10)
+### Initial-velocity inference (Eq. 10) — verified Case (a)
+
+**Verified 2026-07-28**: the initial velocities are **Case (a) — precomputed
+fits, not co-optimized parameters**. Evidence:
+
+- `optimize_vel` (utils.py:382) creates a **fresh** `Optim_velocity(num, H, W)`
+  per batch, fits it with its own `optim.Adam(lr=2)` for 200 steps, returns
+  best-loss `v_x, v_y`.
+- `fit_velocity` (utils.py:411) saves the fitted velocities to `.npy` (plain
+  arrays, no gradient info).
+- `train_region.py:99` creates the main optimizer with `model.parameters()`
+  ONLY — the `Optim_velocity` module is not in the optimizer's param groups
+  during main training.
+- `train_region.py:113,133` loads the `.npy` velocities as plain tensors and
+  passes them into `model.update_param([past_sample, ...])` where they act as
+  fixed inputs to the ODE, not learnable parameters.
+
+**Deviation class per PATCHES.md ledger: "indexing/caching change; estimator
+preserved."** We implement the identical estimator (Adam-fit of the Eq. 10
+loss with RBF prior) per-window online rather than precomputing per (year,
+day-of-year). The mathematical form of Eq. 10, the number of past frames
+used, the RBF prior on velocity smoothness, and the natural-cubic-spline
+temporal derivative are all preserved.
 
 | Paper component | Upstream location | Our integration point | Status |
 |---|---|---|---|
-| Penalised least-squares solve for v(x, t₀) using past frames | `fit_velocity(...)` in `utils.py:411` — precomputes per-year `.npy` cache | see Deviations — this is the biggest incompatibility | ❌ **BLOCKER** |
-| Optim_velocity module | `Optim_velocity(nn.Module)` with `v_x, v_y` as `nn.Parameter(shape=(num_years, 1, 5, H, W))` — **year-indexed** | our sliding-window paradigm has no natural "year" axis at training time | ❌ **BLOCKER** |
-| Gaussian RBF prior for velocity smoothness (α term in Eq. 10) | `kernel = get_gauss_kernel_region((H, W), lat, lon, region)` — RBF over the H×W grid | trivial to compute for our (27, 37) SA grid | ✅ |
-| Δu numerical approximation from past 3 frames | `get_delta_u(past_sample, past_time)` in `utils.py` | our sliding-window input provides T=12 past frames — more than enough | ✅ (mechanically fine, but tied to the year-indexed structure) |
+| Penalised least-squares solve for v(x, t₀) using past frames | `optimize_vel` (utils.py:382) — 200-step Adam(lr=2) fit of MSE loss + RBF prior | new `climode_faithful/initial_velocity.py` — same estimator, per-sample-online rather than per-year-cached | ✅ (indexing change, math preserved) |
+| Optim_velocity module (v_x, v_y as `nn.Parameter`) | `model_function.py:12` — used inside `optimize_vel` as an intermediate optimization variable, discarded after fit | keep as-is; still an intermediate | ✅ |
+| Gaussian RBF prior for velocity smoothness (α term in Eq. 10) | `get_gauss_kernel_region((H, W), lat, lon, region)` — RBF over the H×W grid, precomputed and cached to `kernel_<region>.npy` | precompute once at model init for our (27, 37) SA grid, cache in-memory | ✅ |
+| Δu numerical approximation from past frames | `get_delta_u(past_sample, past_time)` in `utils.py:330` — natural cubic spline through 3 past frames, take derivative at endpoint | use same estimator on our 12h input window (12 past frames — more than the 3 they use, we take the last 3 or all 12) | ✅ (config choice, document in PATCHES.md) |
 
 ### Training
 
@@ -88,46 +125,71 @@ mismatches our harness · ❌ blocking mismatch · ➖ not yet examined.
 
 Ordered from "would need STOP-AND-ASK" to "trivial-and-allowed per brief".
 
-### ❌ Blocker: year-indexed training paradigm ↔ sliding-window paradigm
+### ✅ Resolved: model-private training dataloader (calendar-aligned, 1h)
 
-Upstream's `Train_loader` yields **per-day-of-year batches whose first
-axis is `num_years`**. `Optim_velocity` has `num_years` in its parameter
-shape. The whole training loop iterates day-of-year while implicitly
-learning across years simultaneously.
+**Reframed by decision 2026-07-28**: the shared harness contract is
+data + splits + evaluation — **not training-time batching**. Each model
+already brings its own optimizer/scheduler/objective, so a ClimODE-private
+training dataloader that constructs calendar-aligned batches from the
+same underlying train split is model-recipe, not a harness fork.
 
-Our WeatherFLOW harness yields sliding-window samples that can start at
-any time — there is no "year" axis at training time. Attempting to feed
-upstream's model with sliding-window batches would require:
+Implementation:
+- Training data source: the same `X_train` array in
+  `preprocessing/cache/era5/` (no re-split, no re-normalization).
+- Batching: a training batch is a set of samples at the same clock-time
+  drawn across the training years (~15-way for our 2000–2015 train
+  window, if we treat any consecutive calendar year as an epoch tile).
+  This preserves the year-axis structure upstream's optimization relies
+  on, at zero cost to the shared cache.
+- Sample selection: an epoch iterates over a sampled schedule of
+  calendar start-times; stride chosen so epoch size is comparable to
+  other models' (documented in PATCHES.md).
+- Test-time: standard WeatherFLOW sliding-window contract via our
+  shared trainer. Model returns μ; μ goes through
+  `evaluation.regression.compute_all` unchanged.
 
-1. Replacing `Optim_velocity`'s per-year parameters with a per-sample
-   initial-velocity solve (a fresh least-squares problem for each batch
-   element using its 12h input window).
-2. Rewriting the training loop so each batch is a set of independent
-   sliding-window samples rather than a `(num_years, ...)` block.
+### ✅ Resolved: 1h resolution (task adaptation, not method change)
 
-Per the mission brief this is a **STOP AND ASK** situation — it
-"substitutes the initial-velocity procedure" and I would hesitate to
-justify it in PATCHES.md as a "trivial-and-allowed" patch.
+**Decision 2026-07-28**: train and evaluate at **1h resolution** under
+the standard 12h → 12h contract. Rationale: resolution is task, not
+method — every model in the matrix is retrained at task resolution;
+ClimODE is continuous-time and architecturally indifferent to sampling
+interval. Their 6h protocol was a task choice (WeatherBench 5.625°/6h),
+not an architectural requirement.
 
-### ❌ Blocker: 6h ↔ 1h temporal resolution
+Concrete changes:
+- ODE time coordinate rescaled from `t = 0.01 * timestep` (where their
+  `timestep` counts 6h units) to `t = 0.01 * hourly_timestep` (ours
+  counts hourly units). Semantically the same "0.01 solver-unit per
+  data timestep" scaling; just the data-timestep length changes.
+- ODE tolerances kept at upstream defaults on first pass; re-tune if
+  the smoke reveals numerical issues.
+- Solver: upstream default (Euler for regional) as the starting point;
+  reproduction precedent (github.com/tornikeo/climode-reproducibility)
+  used Euler at global scale on RTX 4090 24 GB — approved fallback if
+  wall-clock threatens.
 
-Upstream integrates with `t = 0.01 * timestep`, where `timestep` counts
-6-hour increments (1460/year). Our data is hourly (8760/year), and our
-harness contract is T=12h input, H=12h horizon in 1h steps.
+Disclosed in PATCHES.md as: "Task resolution: 1h vs their 6h protocol
+(preserves the Phase-1 comparison; ClimODE is continuous-time and
+sampling-interval-agnostic)."
 
-Two paths, both requiring a decision:
+### ⚠️ Boundary padding — reflect on both axes (regional path correction)
 
-- Downsample our ERA5 to 6h to match upstream. **Breaks Phase-1 comparability with the other 3 models** — they'd all need re-benchmarking on 6h data, invalidating 40 completed seeds.
-- Change upstream's `t = 0.01 * timestep` scaling and re-tune ODE tolerances for 1h steps. Empirically likely fine, but it's a substantive change to the numerics of the paper's ODE solver.
+**Verified 2026-07-28**: upstream's **regional** path also inherits
+`boundarypad` (reflect-lat + circular-lon) via `Self_attn_conv_reg` and
+`ResidualBlock` — see `model_utils.py:12,48,51,69,72,96`. Circular
+longitude is correct for global forecasting but **wrong for our bounded
+SA box** (15°E–33°E does not longitudinally wrap).
 
-### ⚠️ Boundary padding assumes circular longitude
+Correction: replace `boundarypad` with reflect-on-both-axes for our
+regional variant. Same pad shape and same downstream conv machinery;
+only the padding mode on the longitude axis changes from `circular`
+→ `reflect`.
 
-Upstream's `boundarypad` uses **reflect** on latitude and **circular**
-on longitude. Circular longitude is correct for global forecasting but
-wrong for a bounded regional box like SA — SA does not wrap around at
-15°E ↔ 33°E. Fix candidates: reflect on both axes, or zero-pad, or
-train-longer-with-reflect. Small architectural deviation, needs
-documentation in PATCHES.md but not a STOP condition.
+Disclosed in PATCHES.md as: "Boundary padding: reflect on both axes
+(correction of a global-only assumption inapplicable to a bounded
+regional box). Upstream's regional path inherits circular longitude
+from the global implementation — verified in `model_utils.py`."
 
 ### ⚠️ Constants: land–sea mask + orography at 0.5° SA subgrid
 
