@@ -40,12 +40,12 @@ _Persistence and climatology reference forecasts, with skill scores for each of 
 
 | Model | Baseline | t2m | d2m | tp | ws10 | rh | sp |
 |-------|----------|---|---|---|---|---|---|
-| clcrn | persistence | +0.426 | +0.087 | +0.145 | +0.274 | +0.275 | +0.139 |
-| clcrn | climatology | +0.802 | +0.757 | +0.536 | +0.638 | +0.636 | +0.898 |
-| mtgode | persistence | +0.206 | -0.129 | -0.015 | +0.043 | +0.090 | -0.054 |
-| mtgode | climatology | +0.582 | +0.540 | +0.377 | +0.408 | +0.451 | +0.705 |
-| agcrn | persistence | -0.079 | -0.307 | -0.166 | -0.165 | -0.119 | -0.292 |
-| agcrn | climatology | +0.297 | +0.362 | +0.226 | +0.199 | +0.243 | +0.468 |
+| clcrn | persistence | +0.425 | +0.087 | +0.145 | +0.274 | +0.275 | +0.139 |
+| clcrn | climatology | +0.801 | +0.756 | +0.536 | +0.638 | +0.636 | +0.898 |
+| mtgode | persistence | +0.218 | -0.121 | -0.009 | +0.051 | +0.092 | -0.049 |
+| mtgode | climatology | +0.594 | +0.549 | +0.382 | +0.415 | +0.453 | +0.711 |
+| agcrn | persistence | -0.079 | -0.307 | -0.165 | -0.164 | -0.118 | -0.291 |
+| agcrn | climatology | +0.297 | +0.363 | +0.226 | +0.200 | +0.243 | +0.468 |
 
 ### AUC-ROC (model — baseline)
 
@@ -53,10 +53,10 @@ _Persistence and climatology reference forecasts, with skill scores for each of 
 |-------|----------|---|---|---|---|---|---|
 | clcrn | persistence | +0.325 | +0.163 | +0.272 | +0.304 | +0.309 | +0.125 |
 | clcrn | climatology | +0.496 | +0.499 | +0.446 | +0.469 | +0.471 | +0.500 |
-| mtgode | persistence | +0.287 | +0.129 | +0.192 | +0.227 | +0.254 | +0.109 |
-| mtgode | climatology | +0.459 | +0.465 | +0.367 | +0.391 | +0.416 | +0.484 |
-| agcrn | persistence | +0.148 | +0.067 | +0.080 | +0.048 | +0.108 | +0.055 |
-| agcrn | climatology | +0.319 | +0.403 | +0.255 | +0.213 | +0.270 | +0.430 |
+| mtgode | persistence | +0.290 | +0.131 | +0.195 | +0.230 | +0.255 | +0.110 |
+| mtgode | climatology | +0.462 | +0.467 | +0.370 | +0.395 | +0.417 | +0.484 |
+| agcrn | persistence | +0.148 | +0.067 | +0.080 | +0.049 | +0.108 | +0.055 |
+| agcrn | climatology | +0.319 | +0.403 | +0.255 | +0.214 | +0.271 | +0.430 |
 
 ### Baseline classification headline
 
