@@ -39,6 +39,10 @@ ADAPTER_REGISTRY = {
     "climode":   "models.continuous_time.climode_adapter.ClimODEAdapter",
     "stlgru":    "models.lightweight.stlgru_adapter.STLGRUAdapter",
     "litestgnn": "models.lightweight.litestgnn_adapter.LiteSTGNNAdapter",
+    # Faithful reimplementation of Verma et al. ClimODE (ICLR 2024) —
+    # DISTINCT from "climode" above (that key points to the archived
+    # ClimODE-inspired advection graph-ODE; see results/archive/climode_inspired/).
+    "climode_faithful": "models.continuous_time.climode_faithful_adapter.ClimODEFaithfulAdapter",
     # Diffusion adapters live in Génevieve's fork; add here when integrated:
     #   "diffstg": "models.diffusion.diffstg_adapter.DiffSTGAdapter",
     #   "ustd":    "models.diffusion.ustd_adapter.USTDAdapter",

@@ -139,24 +139,30 @@ def fit_initial_velocity(
     best_v_y = vel.v_y.detach().clone()
     kernel_inv = kernel_inv.to(device)
 
-    for _ in range(steps):
-        opt.zero_grad()
-        adv, v_x, v_y = vel(data)                       # adv: (B, 1, K, H, W)
-        adv_sq = adv.squeeze(dim=1)                      # (B, K, H, W)
-        recon = nn.MSELoss()(delta_u, adv_sq)
-        # RBF prior: v.T K^{-1} v  (per variable, per axis)
-        v_x_flat = v_x.view(B, K, -1, 1)                # (B, K, N, 1)
-        v_y_flat = v_y.view(B, K, -1, 1)
-        Ki = kernel_inv.expand(B, K, kernel_inv.shape[0], kernel_inv.shape[1])
-        prior_x = torch.matmul(torch.matmul(v_x_flat.transpose(2, 3), Ki), v_x_flat).mean()
-        prior_y = torch.matmul(torch.matmul(v_y_flat.transpose(2, 3), Ki), v_y_flat).mean()
-        loss = recon + prior_weight * (prior_x + prior_y)
-        if loss.item() < best_loss:
-            best_loss = loss.item()
-            best_v_x = v_x.detach().clone()
-            best_v_y = v_y.detach().clone()
-        loss.backward()
-        opt.step()
+    # Force gradient computation inside this block even when the caller
+    # is inside `torch.no_grad()` (which is the case when the adapter's
+    # `predict()` invokes velocity fitting for test-time inference).
+    # The velocities themselves are optimized inside this inner loop and
+    # then returned as detached tensors — no gradient escapes the fit.
+    with torch.enable_grad():
+        for _ in range(steps):
+            opt.zero_grad()
+            adv, v_x, v_y = vel(data)                       # adv: (B, 1, K, H, W)
+            adv_sq = adv.squeeze(dim=1)                      # (B, K, H, W)
+            recon = nn.MSELoss()(delta_u, adv_sq)
+            # RBF prior: v.T K^{-1} v  (per variable, per axis)
+            v_x_flat = v_x.view(B, K, -1, 1)                # (B, K, N, 1)
+            v_y_flat = v_y.view(B, K, -1, 1)
+            Ki = kernel_inv.expand(B, K, kernel_inv.shape[0], kernel_inv.shape[1])
+            prior_x = torch.matmul(torch.matmul(v_x_flat.transpose(2, 3), Ki), v_x_flat).mean()
+            prior_y = torch.matmul(torch.matmul(v_y_flat.transpose(2, 3), Ki), v_y_flat).mean()
+            loss = recon + prior_weight * (prior_x + prior_y)
+            if loss.item() < best_loss:
+                best_loss = loss.item()
+                best_v_x = v_x.detach().clone()
+                best_v_y = v_y.detach().clone()
+            loss.backward()
+            opt.step()
 
     # Concatenate best v_x, v_y along a channel axis → (B, 2*K, H, W)
     # Note vel returns (B, 1, K, H, W); squeeze the num_years=B axis via view

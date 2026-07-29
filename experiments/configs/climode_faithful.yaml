@@ -1,0 +1,71 @@
+# climode_faithful — faithful reimplementation of Verma et al. ClimODE
+# (ICLR 2024, https://arxiv.org/abs/2404.10024, Aalto-QuML/ClimODE).
+#
+# This is DISTINCT from the archived "ClimODE-inspired" advection graph-ODE
+# under registry key `climode` (see results/archive/climode_inspired/).
+#
+# Vendored code lives at models/continuous_time/climode_faithful/.
+# See PATCHES.md in that folder for the full disclosed diff ledger.
+#
+# Training-time paradigm: model-private (calendar-aligned batches at 1h,
+# NLL loss via native_loss hook). Evaluation: standard WeatherFLOW
+# sliding-window contract, predictive mean μ pushed through the shared
+# metric pipeline.
+
+model:
+  name: climode_faithful
+  # ODE solver — upstream default for regional is Euler
+  solver: euler
+  atol: 0.1
+  rtol: 0.1
+  # Architecture toggles (all True = full paper architecture)
+  use_att: true       # flow-velocity attention (KQV, regional variant)
+  use_err: true       # Gaussian emission network (uncertainty)
+  use_pos: false      # false selects paper's non-pos branch (matches upstream train_region.py default)
+  # Initial-velocity fit (per-window online Eq. 10) — mirrors upstream optimize_vel defaults
+  vel_fit_steps: 200
+  vel_fit_lr: 2.0
+  vel_fit_prior: 1.0e-7
+
+training:
+  loss: climode_nll             # per-model native loss (triggers adapter.native_loss)
+  learning_rate: 0.0005          # upstream train_region.py default
+  weight_decay: 1.0e-5           # upstream train_region.py default
+  batch_size: 8                  # upstream train_region.py default; tune post-smoke
+  epochs: 300                    # upstream default niters — will early-stop
+  early_stopping_patience: 15
+  gradient_clip_max_norm: 5.0
+  scheduler:
+    type: CosineAnnealingLR
+    T_max: 300                   # matches upstream cosine schedule
+    eta_min: 1.0e-6
+  # Native variance prior — upstream uses cosine-annealed λ_σ; the
+  # trainer computes var_coeff = 2 * current_lr per upstream train_region.py
+  var_coeff_from_lr: true
+  var_coeff_epoch_0: 1.0e-3
+
+data:
+  input_len: 12
+  horizon: 12
+  # Phase-2 (classification) — climode_faithful does NOT run classification;
+  # per the user's decision brief, classification would require another
+  # unfaithful head swap. Leave the fields present so a shared-config
+  # loader doesn't error.
+  label_mode: per_variable
+  label_variables: [t2m, d2m, tp, ws10, rh, sp]
+  decision_threshold: val_f1
+
+evaluation:
+  vpt_epsilon: 0.3
+
+# NOTE on faithfulness (paper-methods paragraph, paste-ready):
+# "The ClimODE model is trained under its native Gaussian negative
+#  log-likelihood objective (Verma et al. 2024, Eq. 12), with per-window
+#  online initial-velocity estimation via the paper's Eq. 10 penalised
+#  least-squares fit (200 Adam steps, RBF prior on spatial smoothness).
+#  All models are evaluated as point forecasts via their predictive means
+#  on identical held-out data through the shared metric pipeline. Each
+#  method is trained under its published objective (cite Gneiting 2011);
+#  MAE and RMSE are reported and respectively favour median- and
+#  mean-targeting forecasts, with precipitation interpreted through the
+#  event-based analysis."

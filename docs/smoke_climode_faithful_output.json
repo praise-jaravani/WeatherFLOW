@@ -1,0 +1,26 @@
+{
+  "subgrid": {
+    "H": 10,
+    "W": 12,
+    "N": 120,
+    "K": 8,
+    "T": 12,
+    "horizon": 12,
+    "B": 2
+  },
+  "params": 2825645,
+  "timings_sec": {
+    "build_model": 0.06308650970458984,
+    "train_forward": 1.3593451976776123,
+    "train_backward": 0.6900691986083984,
+    "predict": 1.1498076915740967,
+    "compute_all": 0.0048520565032958984
+  },
+  "peak_rss_gib": 0.9238815307617188,
+  "projection_999_nodes": {
+    "scale_factor": 8.325,
+    "per_step_sec_est": 17.061374849081037,
+    "per_epoch_hr_est": 0.9478541582822798,
+    "epochs_per_24h_est": 25.320351016334914
+  }
+}

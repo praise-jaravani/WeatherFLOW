@@ -85,10 +85,32 @@ class ClimODE_uncertain_region(nn.Module):
         super().__init__()
         self.layers = [5, 3, 2]
         self.hidden = [128, 64, 2 * out_types]
-        # NOTE: `30` and `34` are upstream hard-coded shape constants
-        # for the K=5 case; the total input_channels formula generalises
-        # correctly through the `out_types*int(use_pos) + 34*(1-int(use_pos))` term.
-        input_channels = 30 + out_types * int(use_pos) + 34 * (1 - int(use_pos))
+
+        # P2 addendum — upstream `input_channels = 30 + 34*(1-use_pos)`
+        # only happens to equal the true channel count for K=5. The true
+        # count from `pde()`'s comb_rep (non-pos branch):
+        #   t_emb/24        1
+        #   day_emb         2
+        #   seas_emb        2
+        #   nabla_u         2K
+        #   v               2K
+        #   ds              K       → variable parts: 5K
+        #   new_lat_map     1
+        #   new_lon_map     1
+        #   lsm             1
+        #   oro             1
+        #   pos_feats       6
+        #   pos_time_ft   4*6 = 24  → fixed parts: 39
+        # Total = 39 + 5K  (= 64 when K=5, matching upstream's constant).
+        # For pos-branch (self.pos == True):
+        #   variable: 2K (nabla_u) + 2K (v) + K (ds) + K (pos_feat) = 6K
+        #   fixed: 1 + 2 + 2 = 5
+        # Total = 5 + 6K (= 35 when K=5). Upstream `30 + K` gives 35 for
+        # K=5 by the same coincidence.
+        if use_pos:
+            input_channels = 5 + 6 * out_types
+        else:
+            input_channels = 39 + 5 * out_types
         self.vel_f = Climate_ResNet_2D(input_channels, self.layers, self.hidden)
 
         if use_att:
@@ -103,7 +125,17 @@ class ClimODE_uncertain_region(nn.Module):
         self.lat_map = 0
         self.lon_map = 0
         self.method = method
-        err_in = 9 + out_types * int(use_pos) + 34 * (1 - int(use_pos))
+        # Same story for err_in — upstream `9 + 34*(1-use_pos)` = 43 for K=5.
+        # True count from `noise_net_contrib`'s comb_rep (non-pos branch):
+        #   t_cyc_emb                    4
+        #   s_final (K channels)         K
+        #   pos_enc (2 + 6 + 1 + 1)     10
+        #   pos_time_ft (4 * 6)         24  → fixed 38 + K
+        # Non-pos: 38 + K. Pos: fewer channels but not exercised by our config.
+        if use_pos:
+            err_in = 4 + 4 * out_types    # heuristic — pos-branch not exercised in our runs
+        else:
+            err_in = 38 + out_types
         if use_err:
             self.noise_net = Climate_ResNet_2D(err_in, [3, 2, 2], [128, 64, 2 * out_types])
         if use_pos:
