@@ -37,6 +37,7 @@ The 27×37 mapping is proven regular by tests/test_grid_regularity.py.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 import numpy as np
@@ -150,10 +151,45 @@ class ClimODEFaithfulAdapter(BaseAdapter):
         self._vel_fit_lr = float(model_cfg.get("vel_fit_lr", 2.0))
         self._vel_fit_prior = float(model_cfg.get("vel_fit_prior", 1e-7))
 
-        # Constants: for now, zero orography + land-sea mask (SA-region
-        # constant fields could be downloaded — logged as a TODO in
-        # REPORT.md). Shape upstream expects: (1, 2, H, W).
-        self._const_info = torch.zeros((1, 2, self.H, self.W), dtype=torch.float32)
+        # Constants (§1.2 of the 2026-07-28 directive): load real ERA5
+        # static fields for the SA box if data/constants/*.npy exist,
+        # else fall back to zero placeholders with a loud warning. The
+        # smoke uses placeholders by design; production seeds MUST run
+        # on real constants.
+        #
+        # Upstream expects const_info of shape (1, 2, H, W) with channel
+        # 0 = orography, channel 1 = land-sea mask (see
+        # ClimODE_uncertain_region.forward: `self.oro, self.lsm =
+        # self.const_info[0, 0], self.const_info[0, 1]`).
+        constants_dir = Path("data/constants")
+        lsm_path = constants_dir / "era5_sa_lsm.npy"
+        oro_path = constants_dir / "era5_sa_orography.npy"
+        self._constants_source = "placeholder_zeros"
+        if lsm_path.exists() and oro_path.exists():
+            lsm = np.load(lsm_path)
+            oro = np.load(oro_path)
+            if lsm.shape == (self.H, self.W) and oro.shape == (self.H, self.W):
+                self._const_info = torch.from_numpy(
+                    np.stack([oro, lsm], axis=0)[None].astype(np.float32)
+                )
+                self._constants_source = "era5_real"
+            else:
+                # Shape mismatch (e.g. subgrid smoke test) — fall through
+                # to placeholder without an alarming warning
+                self._const_info = torch.zeros((1, 2, self.H, self.W), dtype=torch.float32)
+                self._constants_source = f"placeholder_zeros (real available at {lsm.shape} but this run uses {(self.H, self.W)})"
+
+        if self._constants_source.startswith("placeholder"):
+            if not (lsm_path.exists() and oro_path.exists()):
+                import warnings
+                warnings.warn(
+                    "climode_faithful: real ERA5 constants not found at "
+                    "data/constants/{era5_sa_lsm.npy,era5_sa_orography.npy}; "
+                    "falling back to zero placeholders. Smoke OK, production NOT. "
+                    "Run scripts/download_era5_constants.py.",
+                    UserWarning, stacklevel=2,
+                )
+            self._const_info = torch.zeros((1, 2, self.H, self.W), dtype=torch.float32)
 
         # Precompute RBF kernel inverse for velocity fits
         self._kernel_inv = gaussian_rbf_kernel(

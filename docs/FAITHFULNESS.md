@@ -191,15 +191,28 @@ Disclosed in PATCHES.md as: "Boundary padding: reflect on both axes
 regional box). Upstream's regional path inherits circular longitude
 from the global implementation — verified in `model_utils.py`."
 
-### ⚠️ Constants: land–sea mask + orography at 0.5° SA subgrid
+### ✅ Constants: land–sea mask + orography at 0.5° SA subgrid (RESOLVED 2026-07-29)
 
-Upstream ships `constants_5.625deg.nc` from WeatherBench. We need
-either:
-- Download ERA5 constant fields at 0.5° for our SA bounding box, or
-- Use zeros / a synthetic mask (breaks faithfulness to a component the
-  paper uses).
+Downloaded via `scripts/download_era5_constants.py` from Copernicus CDS
+(`reanalysis-era5-single-levels`, variables `land_sea_mask` +
+`geopotential`, one timestamp 2020-01-01T00:00, area `[N=-22, W=15, S=-35, E=33]`,
+grid `[0.5, 0.5]`). Retrieved 2026-07-29. Files:
+- `data/constants/era5_sa_lsm.npy`         — (27, 37) float32, lsm ∈ [0, 1], mean 0.76
+- `data/constants/era5_sa_orography.npy`   — (27, 37) float32, [-24.9, 2598.2] m (Drakensberg ~3000m — plausible)
+- `data/constants/era5_sa_constants.nc`    — raw CDS delivery (38.4 KB)
 
-Trivial-and-allowed if we download the real ones. ⚠️ if we substitute.
+Test: `test_climode_faithful.py::test_era5_constants_non_degenerate`
+asserts correct shape, valid ranges, and non-degenerate variance.
+
+Adapter behaviour (see `climode_faithful_adapter.py::build_model`):
+- If real constants exist AND match the grid shape → load them (`_constants_source = "era5_real"`).
+- Else (shape mismatch in subgrid tests, or files missing) → zero
+  placeholders with a warning (`_constants_source = "placeholder_zeros"`).
+
+**Hard gate for production seeds**: `_constants_source` must be
+`"era5_real"` when the anchor matrix runs. Adapter records this on the
+model instance so a run's summary JSON can capture it (add to exporter
+before seed launch).
 
 ### ⚠️ K = 8 variables vs upstream K = 5
 

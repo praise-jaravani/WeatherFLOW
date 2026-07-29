@@ -73,6 +73,41 @@ def _make_adapter(H=H_TEST, W=W_TEST, K=K_TEST, T=T_TEST, horizon=HORIZON_TEST) 
 # ---------------------------------------------------------------------------
 # Test 1: shape contract
 # ---------------------------------------------------------------------------
+def test_era5_constants_non_degenerate():
+    """
+    §1.2 hard-gate test: if data/constants/ has real ERA5 fields, they must
+    be well-formed (correct shape, non-zero variance, plausible physical
+    ranges). Placeholders (all-zero) are permitted for smoke; production
+    seeds must not use them.
+
+    Test skips gracefully if constants aren't downloaded yet.
+    """
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    lsm_path = root / "data" / "constants" / "era5_sa_lsm.npy"
+    oro_path = root / "data" / "constants" / "era5_sa_orography.npy"
+    if not (lsm_path.exists() and oro_path.exists()):
+        pytest.skip("real ERA5 constants not downloaded; smoke may use placeholders")
+
+    lsm = np.load(lsm_path)
+    oro = np.load(oro_path)
+
+    # Shape
+    assert lsm.shape == (27, 37), f"lsm shape {lsm.shape} != (27, 37)"
+    assert oro.shape == (27, 37), f"oro shape {oro.shape} != (27, 37)"
+
+    # LSM must be in [0, 1] with meaningful variance (SA is not uniformly land or sea)
+    assert 0.0 <= lsm.min() and lsm.max() <= 1.0
+    assert lsm.std() > 0.1, f"lsm variance too low ({lsm.std()}); check whether download succeeded"
+    # Mean sanity: SA bounding box is ~70-80% land
+    assert 0.4 < lsm.mean() < 0.95, f"lsm mean {lsm.mean()} unrealistic for SA box"
+
+    # Orography: SA sea level to ~3000m peaks. Allow small negative from ocean bathymetry offsets.
+    assert -100 < oro.min() < 200, f"orography min {oro.min()} unrealistic"
+    assert 1500 < oro.max() < 4000, f"orography max {oro.max()} unrealistic (Drakensberg ~3000m)"
+    assert oro.std() > 100, f"orography variance too low ({oro.std()}); flat SA is not real"
+
+
 def test_shape_contract_forward_and_predict():
     adapter = _make_adapter()
     B = 2

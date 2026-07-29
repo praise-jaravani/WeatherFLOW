@@ -13,20 +13,18 @@ Deviation classes:
 
 Every deviation below is disclosed by design; nothing is silent.
 
-## Open TODOs before production seeds (must resolve — flagged in REPORT.md §5)
+## Open TODOs before production seeds
 
-**Constants (lsm + orography)**: currently the adapter passes
-`torch.zeros((1, 2, H, W))` as `const_info`. Upstream uses ERA5's
-`constants_5.625deg.nc` with real land-sea mask and orography fields.
-Zeros are fine for SMOKE only. Before production seeds: download ERA5
-constant fields at 0.5° for the SA bounding box (CDS `reanalysis-era5-
-single-levels`, `land_sea_mask` + `geopotential`), regrid to (27, 37),
-and load in `build_model` in place of the zeros. Add a test asserting
-non-degenerate variance + correct H×W shape. Log source in
-`docs/FAITHFULNESS.md` under Deviations when done. This is a **known
-open item, not a hidden substitution** — placeholders are class B
-(defensible for smoke) but production would be class D (silent) which
-we do NOT accept.
+**Constants (lsm + orography)** — ✅ **RESOLVED 2026-07-29**. Real
+fields downloaded via `scripts/download_era5_constants.py` (CDS
+retrieval, one timestamp 2020-01-01, 38.4 KB). Cached at
+`data/constants/{era5_sa_lsm.npy, era5_sa_orography.npy}`. Adapter
+loads them in `build_model` when the grid matches (999-node SA box);
+falls back to placeholders with a warning otherwise (subgrid tests
+still work). Non-degeneracy test at
+`test_climode_faithful.py::test_era5_constants_non_degenerate`.
+Source recorded in `_constants_source` attribute; production runs
+must have `"era5_real"`. See `docs/FAITHFULNESS.md`.
 
 ---
 

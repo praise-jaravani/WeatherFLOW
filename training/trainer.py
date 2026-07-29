@@ -218,6 +218,13 @@ class Trainer:
                     break
 
         history["stopped_epoch"] = stopped_epoch
+        # End-of-training full-val pass (§1.1): if we've been running on
+        # a subsampled val set for checkpoint selection, do one full-val
+        # pass at the end so `final_val_loss` in the history reflects
+        # the entire validation split. No-op when subsampling is off
+        # (force_full just re-runs the same full pass).
+        if self._val_subsample_indices() is not None:
+            history["final_val_loss_full"] = self._validate_epoch(force_full=True)
         history["test_metrics"] = self._evaluate_test()
 
         self._log_file.close()
@@ -293,13 +300,66 @@ class Trainer:
 
         return total_loss / max(n_batches, 1), total_norm / max(n_batches, 1)
 
-    def _validate_epoch(self) -> float:
-        """One validation epoch. Returns mean val loss."""
+    # ------------------------------------------------------------------
+    # Subsampled-validation hook (§1.1 of the 2026-07-28 directive).
+    # Guarded, default-off: unless the config has training.val_subsample_n
+    # OR the adapter declares val_subsample_n, the full val_loader runs.
+    #
+    # Deterministic subsample: batch indices selected once at first call
+    # via a torch.Generator seeded from (val_subsample_seed default 12345)
+    # so the same subset is used every epoch and every seed's run.
+    # ------------------------------------------------------------------
+    def _val_subsample_config(self) -> tuple[int | None, int]:
+        """Return (subsample_n, seed) or (None, seed) to disable subsampling."""
+        # Adapter overrides win
+        n = getattr(self.adapter, "val_subsample_n", None)
+        if n is None:
+            n = self.config.get("training", {}).get("val_subsample_n") if hasattr(self, "config") else None
+        seed = getattr(self.adapter, "val_subsample_seed", None) or 12345
+        if hasattr(self, "config"):
+            seed = self.config.get("training", {}).get("val_subsample_seed", seed)
+        return (int(n) if n else None, int(seed))
+
+    def _val_subsample_indices(self) -> Optional[list]:
+        """Cached deterministic indices into the val_loader's batch stream."""
+        n, seed = self._val_subsample_config()
+        if n is None:
+            return None
+        if getattr(self, "_val_sub_cache", None) is not None:
+            return self._val_sub_cache
+        n_val = len(self.val_loader.dataset)
+        if n_val <= n:
+            self._val_sub_cache = list(range(n_val))
+        else:
+            g = torch.Generator()
+            g.manual_seed(seed)
+            self._val_sub_cache = torch.randperm(n_val, generator=g)[:n].tolist()
+        return self._val_sub_cache
+
+    def _validate_epoch(self, force_full: bool = False) -> float:
+        """One validation epoch. Returns mean val loss.
+
+        Uses a subsampled window subset when configured (via
+        `training.val_subsample_n`), giving a stable checkpoint-selection
+        signal at a fraction of the cost. `force_full=True` bypasses the
+        subsample — used for the end-of-training final eval.
+        """
         total_loss = 0.0
         n_batches = 0
         native = self._uses_native_loss()
 
-        for x, y in self.val_loader:
+        sub_indices = None if force_full else self._val_subsample_indices()
+        if sub_indices is not None:
+            # Build a light-weight subset view of the same DataLoader dataset
+            subset = torch.utils.data.Subset(self.val_loader.dataset, sub_indices)
+            loader = torch.utils.data.DataLoader(
+                subset, batch_size=self.val_loader.batch_size,
+                shuffle=False, num_workers=0, pin_memory=False,
+            )
+        else:
+            loader = self.val_loader
+
+        for x, y in loader:
             x = x.to(self.device)
             y = y.to(self.device)
 
