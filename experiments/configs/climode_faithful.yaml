@@ -43,6 +43,14 @@ training:
   # trainer computes var_coeff = 2 * current_lr per upstream train_region.py
   var_coeff_from_lr: true
   var_coeff_epoch_0: 1.0e-3
+  # Subsampled validation for checkpoint selection during training
+  # (§2 of the 2026-07-28 review). Full-val cost at 999 nodes would
+  # dwarf the training epoch cost; a fixed ~2K-window subsample gives
+  # a stable checkpoint-selection signal at ~5% of the full-val time.
+  # Full validation is only run once at end-of-training.
+  # PATCHES.md class: B (task adaptation, common validation-cost mitigation).
+  val_subsample_size: 2000
+  val_subsample_seed: 12345         # fixed → same val subset across seeds/epochs
 
 data:
   input_len: 12

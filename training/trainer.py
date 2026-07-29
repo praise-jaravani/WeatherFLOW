@@ -151,7 +151,17 @@ class Trainer:
             Dict with 'train_loss', 'val_loss' history lists, 'stopped_epoch',
             and 'test_metrics' dict from the best checkpoint.
         """
-        history: Dict[str, Any] = {"train_loss": [], "val_loss": [], "grad_norm": []}
+        # Record which loss function actually ran, so the archived history
+        # is self-describing (per §1 of the 2026-07-28 review directive).
+        loss_type = (
+            f"native:{type(self.adapter).__name__}"
+            if self._uses_native_loss()
+            else type(self.loss_fn).__name__
+        )
+        history: Dict[str, Any] = {
+            "loss_type": loss_type,
+            "train_loss": [], "val_loss": [], "grad_norm": [],
+        }
         stopped_epoch = self.epochs
 
         with Progress(
@@ -168,6 +178,9 @@ class Trainer:
             )
 
             for epoch in range(1, self.epochs + 1):
+                # Exposed on `self` so the native-loss hook can compute
+                # its epoch-dependent `var_coeff` (upstream cosine-annealed).
+                self._epoch = epoch
                 train_loss, grad_norm = self._train_epoch()
                 val_loss = self._validate_epoch()
 
@@ -214,12 +227,42 @@ class Trainer:
     # Private helpers
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Per-model native-loss hook (guarded, additive, default-off).
+    # ------------------------------------------------------------------
+    #
+    # Adapters that need to train under their published objective (e.g.
+    # climode_faithful's Gaussian NLL) opt in via:
+    #   adapter.uses_native_loss = True
+    #   adapter.forward(x, adj) → non-Tensor object (tuple, dict, ...)
+    #   adapter.native_loss(pred_object, target, **kwargs) → scalar
+    #
+    # Every other adapter's path is byte-identical to before — the
+    # `getattr(..., False)` default returns False and the shared
+    # `self.loss_fn(pred, y)` branch runs unchanged. Tested in
+    # tests/test_native_loss_hook.py.
+    # ------------------------------------------------------------------
+    def _uses_native_loss(self) -> bool:
+        return bool(getattr(self.adapter, "uses_native_loss", False))
+
+    def _native_loss_kwargs(self) -> Dict[str, Any]:
+        """
+        Build the kwargs passed to `adapter.native_loss(...)`. Currently
+        just `var_coeff` for climode_faithful's Gaussian NLL prior on σ
+        (upstream train_region.py: `var_coeff = 2 * lr` after epoch 0,
+        `1e-3` at epoch 0). Extendable for other native losses.
+        """
+        current_lr = self.optimiser.param_groups[0]["lr"]
+        var_coeff = 1e-3 if self._epoch <= 0 else 2.0 * current_lr
+        return {"var_coeff": var_coeff}
+
     def _train_epoch(self):
         """One training epoch. Returns (mean_train_loss, mean_grad_norm)."""
         self.adapter.model.train()
         total_loss = 0.0
         total_norm = 0.0
         n_batches = 0
+        native = self._uses_native_loss()
 
         for x, y in self.train_loader:
             x = x.to(self.device)
@@ -228,12 +271,18 @@ class Trainer:
             self.optimiser.zero_grad()
             pred = self.adapter.forward(x, self.adj)
 
-            # BCEWithLogitsLoss expects float targets; classification y is int8
-            if self.task == "classification":
-                y = y.float()
-                pred = self._subset_pred_to_label_channels(pred)
+            if native:
+                # Adapter owns the loss and the pred format. Skip
+                # classification subsetting — adapters using native_loss
+                # are regression-only (see FAITHFULNESS.md notes).
+                loss = self.adapter.native_loss(pred, y, **self._native_loss_kwargs())
+            else:
+                # BCEWithLogitsLoss expects float targets; classification y is int8
+                if self.task == "classification":
+                    y = y.float()
+                    pred = self._subset_pred_to_label_channels(pred)
+                loss = self.loss_fn(pred, y)
 
-            loss = self.loss_fn(pred, y)
             loss.backward()
             norm = clip_gradients(self.adapter.model, self.max_norm)
             self.optimiser.step()
@@ -248,18 +297,27 @@ class Trainer:
         """One validation epoch. Returns mean val loss."""
         total_loss = 0.0
         n_batches = 0
+        native = self._uses_native_loss()
 
         for x, y in self.val_loader:
             x = x.to(self.device)
             y = y.to(self.device)
 
-            pred = self.adapter.predict(x, self.adj)
+            if native:
+                # Adapters using native_loss must expose a training-mode
+                # forward that returns the object native_loss expects
+                # (e.g. climode_faithful returns (μ, σ) from forward).
+                # Wrap in no_grad since we're in the val loop.
+                with torch.no_grad():
+                    pred = self.adapter.forward(x, self.adj)
+                    loss = self.adapter.native_loss(pred, y, **self._native_loss_kwargs())
+            else:
+                pred = self.adapter.predict(x, self.adj)
+                if self.task == "classification":
+                    y = y.float()
+                    pred = self._subset_pred_to_label_channels(pred)
+                loss = self.loss_fn(pred, y)
 
-            if self.task == "classification":
-                y = y.float()
-                pred = self._subset_pred_to_label_channels(pred)
-
-            loss = self.loss_fn(pred, y)
             total_loss += loss.item()
             n_batches += 1
 

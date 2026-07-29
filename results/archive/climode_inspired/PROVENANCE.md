@@ -48,7 +48,7 @@ code from it was imported by our model. Substantive differences:
 | Initial velocity | Penalised least-squares inference from past frames (Eq. 10 of paper) | None (GRU-encoded latent) |
 | Spatial structure | Gridded H×W with `torch.gradient()` for spatial derivatives | Graph diffusion via adjacency matrix |
 | Training objective | Gaussian negative log-likelihood over (μ, σ²) | MAE / WBCE (our shared harness losses) |
-| Parameters | ≈ several million (28M in Table 1) | ≈ 17K |
+| Parameters | ≈ several million (Table 1 of Verma et al. shows 28M for their WeatherBench global run; the *regional* variant we care about for SA — `ClimODE_uncertain_region` — builds to ~2.8M params at K=8, H=27, W=37, i.e. two orders of magnitude larger than the archived model, not four) | ≈ 17K |
 
 Verma et al.'s own ablation shows the attention and emission components
 contribute the largest gains — so their absence is not cosmetic.

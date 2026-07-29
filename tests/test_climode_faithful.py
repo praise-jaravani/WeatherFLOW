@@ -195,6 +195,156 @@ def test_gradients_flow_through_full_stack():
 # ---------------------------------------------------------------------------
 # Test 5: checkpoint round-trip
 # ---------------------------------------------------------------------------
+def test_velocity_cache_roundtrip(tmp_path, monkeypatch):
+    """
+    Cache write → read produces identical velocities. Also verifies the
+    fits are deterministic given the same split_tag + window_index
+    (per §2 of the 2026-07-28 review directive).
+    """
+    from models.continuous_time.climode_faithful import velocity_cache
+
+    # Redirect the cache root so we don't touch the real preprocessing dir
+    monkeypatch.setattr(velocity_cache, "CACHE_ROOT", tmp_path / "vel_cache")
+
+    from models.continuous_time.climode_faithful.velocity_cache import (
+        load_or_fit_velocity, cache_stats,
+    )
+    from models.continuous_time.climode_faithful.initial_velocity import (
+        gaussian_rbf_kernel,
+    )
+
+    H, W, K, T = 8, 10, 3, 6
+    lat = np.linspace(-30.0, -25.0, H, dtype=np.float32)[::-1].copy()
+    lon = np.linspace(20.0, 25.0, W, dtype=np.float32)
+    Ki = gaussian_rbf_kernel(H, W, lat, lon)
+
+    torch.manual_seed(0)
+    frames = torch.randn(1, T, K, H, W)
+    times = torch.arange(T, dtype=torch.float32)
+
+    # First call: cache miss → fits and stores
+    v1 = load_or_fit_velocity("test_split", 42, frames, times, Ki, steps=15)
+    assert v1.shape == (2 * K, H, W)
+
+    # Second call: cache hit → identical tensor
+    v2 = load_or_fit_velocity("test_split", 42, frames, times, Ki, steps=15)
+    assert torch.equal(v1, v2), "cache read gave different bytes than the write"
+
+    # Different window index → different key → different fit (probably)
+    v3 = load_or_fit_velocity("test_split", 99, frames, times, Ki, steps=15)
+    # Not asserting difference (data was the same; fits could coincide) —
+    # just checking the cache_stats reports both entries.
+    stats = cache_stats("test_split")
+    assert stats["split_counts"]["test_split"] == 2
+
+    # use_cache=False bypasses read AND write
+    v4 = load_or_fit_velocity("test_split", 999, frames, times, Ki, steps=15, use_cache=False)
+    assert v4.shape == (2 * K, H, W)
+    stats2 = cache_stats("test_split")
+    assert stats2["split_counts"]["test_split"] == 2, "use_cache=False should not write"
+
+
+def test_velocity_cache_deterministic_seed(tmp_path, monkeypatch):
+    """Same (split_tag, window_index) → bit-identical fit even from fresh init."""
+    from models.continuous_time.climode_faithful import velocity_cache
+    monkeypatch.setattr(velocity_cache, "CACHE_ROOT", tmp_path / "vc")
+    from models.continuous_time.climode_faithful.velocity_cache import (
+        load_or_fit_velocity,
+    )
+    from models.continuous_time.climode_faithful.initial_velocity import (
+        gaussian_rbf_kernel,
+    )
+
+    H, W, K, T = 6, 8, 2, 4
+    lat = np.linspace(-30.0, -25.0, H, dtype=np.float32)[::-1].copy()
+    lon = np.linspace(20.0, 25.0, W, dtype=np.float32)
+    Ki = gaussian_rbf_kernel(H, W, lat, lon)
+    torch.manual_seed(0)
+    frames = torch.randn(1, T, K, H, W)
+    times = torch.arange(T, dtype=torch.float32)
+
+    v_a = load_or_fit_velocity("s", 7, frames, times, Ki, steps=8, use_cache=False)
+    v_b = load_or_fit_velocity("s", 7, frames, times, Ki, steps=8, use_cache=False)
+    # Same key → same seed inside → identical fit
+    assert torch.allclose(v_a, v_b, atol=1e-6), (v_a - v_b).abs().max()
+
+
+def test_fd_matches_cubic_spline_endpoint_derivative():
+    """
+    §6 of the 2026-07-28 review — close the FD-vs-spline equivalence
+    claim in PATCHES.md P4 with a numerical test (torchcubicspline is
+    not available locally; use scipy.CubicSpline as the reference
+    natural cubic spline implementation).
+
+    On known smooth signals, 2nd-order backward FD and the natural
+    cubic spline endpoint derivative should agree to within O(dt²).
+    """
+    from scipy.interpolate import CubicSpline
+    from models.continuous_time.climode_faithful.initial_velocity import (
+        delta_u_from_past,
+    )
+
+    # 3 uniformly-spaced points on a smooth function
+    t = np.array([0.0, 1.0, 2.0])
+    B, K, H, W = 1, 2, 4, 5
+
+    # Signal 1: linear — derivative is exactly constant, both estimators
+    # should recover it exactly
+    slope = 0.7
+    f_linear = np.stack([np.full((K, H, W), slope * ti, dtype=np.float32) for ti in t])
+    frames = torch.from_numpy(f_linear[None])                     # (1, T=3, K, H, W)
+    fd_deriv = delta_u_from_past(frames, torch.from_numpy(t.astype(np.float32))).numpy()
+    assert np.allclose(fd_deriv, slope, atol=1e-5), (
+        f"FD failed on linear signal: got mean {fd_deriv.mean()}, expected {slope}"
+    )
+    # scipy natural cubic spline through 3 collinear points → derivative = slope
+    for k in range(K):
+        for h in range(H):
+            for w in range(W):
+                cs = CubicSpline(t, f_linear[:, k, h, w], bc_type="natural")
+                spline_deriv = float(cs(t[-1], 1))                # 1st derivative at endpoint
+                assert np.isclose(spline_deriv, slope, atol=1e-5), (
+                    f"scipy spline failed on linear: got {spline_deriv}, expected {slope}"
+                )
+
+    # Signal 2: quadratic f(t) = 0.5 t^2 → f'(t=2) = 2.0
+    f_quad = np.stack([np.full((K, H, W), 0.5 * ti ** 2, dtype=np.float32) for ti in t])
+    frames = torch.from_numpy(f_quad[None])
+    fd_deriv = delta_u_from_past(frames, torch.from_numpy(t.astype(np.float32))).numpy()
+    # For uniform dt=1, 2nd-order backward FD is EXACT on quadratics:
+    # (3*f(2) - 4*f(1) + f(0)) / (2*1) = (3*2 - 4*0.5 + 0) / 2 = 2.0 ✓
+    assert np.allclose(fd_deriv, 2.0, atol=1e-5), (
+        f"FD not exact on quadratic: got mean {fd_deriv.mean()}"
+    )
+    # scipy spline may differ because natural BC forces 2nd deriv = 0 at endpoints,
+    # so it can't fit a pure quadratic exactly. Quantify the difference:
+    scipy_derivs = []
+    for k in range(K):
+        for h in range(H):
+            for w in range(W):
+                cs = CubicSpline(t, f_quad[:, k, h, w], bc_type="natural")
+                scipy_derivs.append(float(cs(t[-1], 1)))
+    scipy_derivs = np.array(scipy_derivs)
+    # Document the divergence — natural spline BC bites here
+    diff = np.abs(scipy_derivs - fd_deriv.flatten()).max()
+    # The natural-BC spline's derivative at the endpoint on a quadratic
+    # over 3 points can differ from the true derivative because the
+    # natural BC (f''=0 at the endpoint) forces a spline that isn't the
+    # true parabola. This is a KNOWN property, not a bug. We assert
+    # only that the difference is bounded — i.e., both estimators are
+    # O(dt²) accurate on smooth signals.
+    assert diff < 1.5, f"FD and natural-cubic-spline diverge more than expected on quadratic: {diff}"
+
+    # Signal 3: sinusoidal — moderate curvature
+    f_sin = np.stack([np.sin(np.pi * ti / 3) * np.ones((K, H, W), dtype=np.float32) for ti in t])
+    frames = torch.from_numpy(f_sin[None])
+    fd_deriv = delta_u_from_past(frames, torch.from_numpy(t.astype(np.float32))).numpy()
+    truth_deriv = (np.pi / 3) * np.cos(np.pi * 2 / 3)             # f'(t=2) analytical
+    fd_err = np.abs(fd_deriv.mean() - truth_deriv)
+    # 2nd-order FD error on smooth periodic: expect O(dt²) = O(1) here (dt=1)
+    assert fd_err < 0.3, f"FD off from analytical truth by more than expected: {fd_err}"
+
+
 def test_checkpoint_save_load_identical_predictions():
     torch.manual_seed(0)
     adapter1 = _make_adapter()

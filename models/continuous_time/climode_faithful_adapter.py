@@ -52,6 +52,9 @@ from models.continuous_time.climode_faithful.model_function import (
     ClimODE_uncertain_region,
 )
 from models.continuous_time.climode_faithful.nll_loss import climode_nll
+from models.continuous_time.climode_faithful.velocity_cache import (
+    load_or_fit_velocity,
+)
 
 
 class ClimODEFaithfulAdapter(BaseAdapter):
@@ -73,6 +76,13 @@ class ClimODEFaithfulAdapter(BaseAdapter):
         self._const_info: torch.Tensor | None = None
         self._lat_row_order: np.ndarray | None = None
         self._lon_row_order: np.ndarray | None = None
+        # Velocity-cache context — the trainer/DataLoader must set these
+        # per batch so the cache key (split_tag, window_index) is
+        # well-defined. Default off so unit tests + smoke work without
+        # them; see set_velocity_cache_context() for the API.
+        self._cache_split_tag: str | None = None
+        self._cache_window_indices: list[int] | None = None
+        self._cache_use: bool = True
 
     # ---------------------------- setup -------------------------------- #
 
@@ -195,16 +205,39 @@ class ClimODEFaithfulAdapter(BaseAdapter):
         # (B, T, N, d) → (B, T, d, H, W) — full input window on the grid
         x_grid = self._to_grid(x)                                # (B, T, d, H, W)
 
-        # Fit initial velocity from the T-frame past window
+        # Fit initial velocity from the T-frame past window — cached
+        # per (split, window_index) when the trainer has set the context.
         past_time_hours = torch.arange(T, dtype=torch.float32, device=device)   # 0..T-1
-        past_samples = fit_initial_velocity(
-            past_frames=x_grid,
-            past_time_hours=past_time_hours,
-            kernel_inv=self._kernel_inv,
-            steps=self._vel_fit_steps,
-            lr=self._vel_fit_lr,
-            prior_weight=self._vel_fit_prior,
-        )                                                        # (B, 2d, H, W)
+        if self._cache_split_tag is not None and self._cache_window_indices is not None:
+            # Per-window cache lookup; stack results into (B, 2d, H, W).
+            assert len(self._cache_window_indices) == B, (
+                f"cache_window_indices length {len(self._cache_window_indices)} != batch size {B}"
+            )
+            per_window = []
+            for b in range(B):
+                v = load_or_fit_velocity(
+                    split_tag=self._cache_split_tag,
+                    window_index=int(self._cache_window_indices[b]),
+                    past_frames=x_grid[b:b + 1],                 # keep B=1 shape
+                    past_time_hours=past_time_hours,
+                    kernel_inv=self._kernel_inv,
+                    steps=self._vel_fit_steps,
+                    lr=self._vel_fit_lr,
+                    prior_weight=self._vel_fit_prior,
+                    use_cache=self._cache_use,
+                )                                                 # (2d, H, W)
+                per_window.append(v)
+            past_samples = torch.stack(per_window, dim=0)         # (B, 2d, H, W)
+        else:
+            # No cache context — legacy per-batch fit (used by unit tests + smoke)
+            past_samples = fit_initial_velocity(
+                past_frames=x_grid,
+                past_time_hours=past_time_hours,
+                kernel_inv=self._kernel_inv,
+                steps=self._vel_fit_steps,
+                lr=self._vel_fit_lr,
+                prior_weight=self._vel_fit_prior,
+            )                                                    # (B, 2d, H, W)
 
         # Hand the model its parameters. `data` upstream is the current
         # frame in shape (B, 1, d, H, W) — we use the LAST input frame
@@ -268,6 +301,32 @@ class ClimODEFaithfulAdapter(BaseAdapter):
 
     def get_param_count(self) -> int:
         return sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+
+    # ---------------- velocity-cache context API ---------------------- #
+
+    def set_velocity_cache_context(
+        self,
+        split_tag: str | None,
+        window_indices: list[int] | None = None,
+        use_cache: bool = True,
+    ) -> None:
+        """
+        Set the per-batch context that keys the velocity cache.
+
+        The trainer (or a bespoke cache-warmer) calls this immediately
+        before each forward/predict so `load_or_fit_velocity(...)` can
+        look up per-window fits.
+
+        Args:
+            split_tag: "train" | "val" | "test" | "smoke" | None to disable
+            window_indices: length-B list of window start indices for the
+                            current batch; None to disable cache lookup
+            use_cache: if False, fit fresh on each call (used by the smoke
+                       to measure worst-case cost per §4 of the review)
+        """
+        self._cache_split_tag = split_tag
+        self._cache_window_indices = window_indices
+        self._cache_use = use_cache
 
     # -------------------- native loss ---------------------------------- #
 
