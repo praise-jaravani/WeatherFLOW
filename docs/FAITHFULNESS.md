@@ -1,5 +1,64 @@
 # ClimODE faithful reimplementation — component checklist
 
+## Pre-registration: Phase-2 classification score for climode_faithful (2026-07-29)
+
+Recorded here BEFORE any regression results land, so the decision cannot
+be argued to have been made post-hoc based on which score looks better.
+
+**Design principle** (from the loss-per-model decision brief): retraining
+climode_faithful with WBCE would require amputating the Gaussian emission
+head and grafting a sigmoid — a structural modification of the published
+architecture. That's the exact class of unfaithfulness the whole
+climode_faithful integration exists to correct. So we do NOT retrain
+under WBCE. Classification for climode_faithful is derived from the
+regression model's predictive distribution.
+
+**Primary classification score (pre-registered):**
+
+    P(exceedance) = 1 − Φ((thr − μ) / σ)
+
+using the emission head's per-sample per-cell (μ, σ). Φ is the standard
+normal CDF. `thr` is the audit's 95th-percentile per (station, variable)
+threshold, matching the labels the other models were trained against.
+
+This is the canonical way operational ensemble NWP produces
+probability-of-exceedance products, and ClimODE is the only model in
+our matrix that can compute it natively — it uses the emission head,
+the very component whose absence defined the unfaithful version.
+
+**Sensitivity check (not primary):** the plain margin `μ − thr`. This
+is a **different score**, not a monotone transform of the primary: σ
+varies per sample so the ranking changes. Reported as a sanity check;
+does not replace the primary in any table.
+
+**τ selection**: exactly the same protocol as the other models —
+max-F1 sweep over [0.05, 0.95] on the validation split, per (variable).
+The primary probabilities go through this pipeline unchanged.
+
+**Metrics**: F1 / precision / recall / CSI / AUC-ROC / PR-AUC exactly
+as computed by `evaluation/classification.py::compute_all` for the
+other models. AUC-ROC and PR-AUC are invariant to monotone transforms
+of the score, and max-F1 τ absorbs monotone miscalibration — so σ
+imperfect calibration does not punish the reported metrics beyond
+what it costs the ranking.
+
+**Paper labeling**: climode_faithful's Phase-2 row is labeled
+"derived from the regression model via native exceedance probabilities"
+(one honest clause). The thresholded-regression baseline analysis
+(Phase-1 checkpoints of the discrete models thresholded and compared
+against their WBCE versions) provides the symmetric-comparison view:
+all four models compared under identical regression→threshold treatment,
+while the WBCE-vs-thresholded delta on the discrete models bounds
+what climode_faithful's WBCE-free treatment costs it.
+
+**Standard caveat**: `tp` under a Gaussian emission is the weak spot
+(precipitation distribution is not Gaussian, especially in the tail).
+Event-based precipitation analysis remains the honest lens there,
+same as for every other model.
+
+---
+
+
 Mapping Verma et al. (ICLR 2024) ClimODE → upstream code
 (`models/continuous_time/ClimODE/`) → our integration point.
 
