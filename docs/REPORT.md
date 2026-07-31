@@ -1,5 +1,40 @@
 # climode_faithful integration — REPORT
 
+## STAND-DOWN 2026-07-30
+
+**Mission stopped by supervisor redirection.** MTGODE is the new project core;
+ClimODE is paused ("not cut"). ERA5 no longer accepted as the primary basis
+for headline conclusions ("graph learns the interpolation engine's structure,
+not nature's"); SAWS station data is primary going forward, with a
+horizon extension past 12h.
+
+Actions taken this stand-down (all HPC-side):
+- Killed hpc_watcher_p2.sh (was PID 1441983); did NOT restart.
+- Stripped the one-shot smoke injection from hpc_watcher_p2.sh; smoke was
+  NEVER submitted — sat queued in the watcher waiting for a slot gap.
+- `scancel -u jrvpra001` — cancelled the 5 remaining Phase-2 pending seeds
+  (agcrn/mtgode/clcrn seeds 48-51, three of them retries). No Phase-2 seeds
+  were mid-run at time of cancellation.
+- No new submissions of any kind. HPC surface is fully idle.
+
+State-of-branch at freeze:
+- All climode_faithful code, tests, sbatch templates, and pre-registrations
+  are on branch `climode-faithful` (no push, no merge), commits `8fc6010`
+  through `0b1b654`. The branch is a complete, tested, documented,
+  submission-ready faithful ClimODE integration — mothballed unless the
+  "another ODE type" conversation or the continental-ERA5 grid exploration
+  ever revives it. Its trainer hooks (native_loss, val_subsample) and
+  velocity_cache design remain as general-purpose infrastructure regardless.
+- Phase-2 final tallies at freeze: agcrn 8/10, mtgode 7/10, clcrn 7/10
+  live-matrix seeds (climode-inspired 6/10, archived). Numbers stable, no
+  further seeds will land.
+
+Awaiting new mission brief.
+
+---
+
+
+
 ## TL;DR
 
 **Part A (segmentation) complete** — commit 8fc6010 on branch `climode-faithful`.

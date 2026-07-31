@@ -40,12 +40,12 @@ _Persistence and climatology reference forecasts, with skill scores for each of 
 
 | Model | Baseline | t2m | d2m | tp | ws10 | rh | sp |
 |-------|----------|---|---|---|---|---|---|
-| clcrn | persistence | +0.425 | +0.087 | +0.145 | +0.274 | +0.275 | +0.139 |
-| clcrn | climatology | +0.801 | +0.756 | +0.536 | +0.638 | +0.636 | +0.898 |
+| clcrn | persistence | +0.425 | +0.086 | +0.144 | +0.273 | +0.275 | +0.139 |
+| clcrn | climatology | +0.801 | +0.756 | +0.536 | +0.637 | +0.636 | +0.898 |
 | mtgode | persistence | +0.218 | -0.121 | -0.009 | +0.051 | +0.092 | -0.049 |
 | mtgode | climatology | +0.594 | +0.549 | +0.382 | +0.415 | +0.453 | +0.711 |
-| agcrn | persistence | -0.079 | -0.307 | -0.165 | -0.164 | -0.118 | -0.291 |
-| agcrn | climatology | +0.297 | +0.363 | +0.226 | +0.200 | +0.243 | +0.468 |
+| agcrn | persistence | -0.079 | -0.306 | -0.166 | -0.164 | -0.118 | -0.290 |
+| agcrn | climatology | +0.297 | +0.363 | +0.226 | +0.200 | +0.243 | +0.469 |
 
 ### AUC-ROC (model — baseline)
 
@@ -55,8 +55,8 @@ _Persistence and climatology reference forecasts, with skill scores for each of 
 | clcrn | climatology | +0.496 | +0.499 | +0.446 | +0.469 | +0.471 | +0.500 |
 | mtgode | persistence | +0.290 | +0.131 | +0.195 | +0.230 | +0.255 | +0.110 |
 | mtgode | climatology | +0.462 | +0.467 | +0.370 | +0.395 | +0.417 | +0.484 |
-| agcrn | persistence | +0.148 | +0.067 | +0.080 | +0.049 | +0.108 | +0.055 |
-| agcrn | climatology | +0.319 | +0.403 | +0.255 | +0.214 | +0.271 | +0.430 |
+| agcrn | persistence | +0.148 | +0.068 | +0.080 | +0.049 | +0.109 | +0.055 |
+| agcrn | climatology | +0.320 | +0.404 | +0.255 | +0.214 | +0.271 | +0.430 |
 
 ### Baseline classification headline
 
