@@ -17,12 +17,15 @@ Responsibilities:
 
 import json
 import logging
+import math
+import os
+import random
 import time
 import numpy as np
 import torch
 import torch.nn as nn
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from torch.utils.data import DataLoader
 
 from rich.progress import (
@@ -41,6 +44,37 @@ import evaluation.classification as classification
 from evaluation.computational import record_inference_time
 
 logger = logging.getLogger(__name__)
+
+
+# Run_Plan_Spec §5: raised by Trainer when train_loss or grad_norm is
+# non-finite for 3 consecutive epochs. The worker catches this, writes the
+# FAILED_DIVERGED marker, and moves on. Never retried — one bad config
+# doesn't get to burn 10× GPU-hours in a loop.
+class TrainingDiverged(RuntimeError):
+    def __init__(self, epoch: int, streak: int, last_loss: float, last_norm: float):
+        super().__init__(
+            f"Training diverged at epoch {epoch}: "
+            f"{streak} consecutive non-finite epochs "
+            f"(last train_loss={last_loss}, grad_norm={last_norm})"
+        )
+        self.epoch = epoch
+        self.streak = streak
+
+
+def _epoch_shuffle_seed(base_seed: int, epoch: int) -> int:
+    """Deterministic per-epoch seed for shuffling + dropout.
+
+    Run_Plan_Spec §1.1: derive shuffle seed as f(base_seed, epoch) at each
+    epoch start so a resumed run picks up the identical stochastic trajectory
+    as an uninterrupted run. Uses hashlib for stability across Python
+    versions (Python's built-in hash() is salted per process).
+    """
+    import hashlib
+    payload = f"{int(base_seed)}:{int(epoch)}".encode()
+    digest = hashlib.sha256(payload).digest()
+    # Take first 8 bytes as an unsigned int, mask to 63 bits so it fits
+    # torch.manual_seed's accepted range (int64, non-negative).
+    return int.from_bytes(digest[:8], "big") & 0x7FFF_FFFF_FFFF_FFFF
 
 
 class Trainer:
@@ -135,21 +169,53 @@ class Trainer:
         self.best_val_loss = float("inf")
         self.patience_counter = 0
         self.checkpoint_path = self.output_dir / "checkpoint.pt"
+        # Run_Plan_Spec §1.1: full training state for atomic resume.
+        # Distinct from checkpoint.pt (best model weights only).
+        self.state_path = self.output_dir / "state.pt"
+        # §5: streak of consecutive non-finite train epochs; resets on any finite epoch.
+        self.diverged_streak = 0
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-        self._log_file = open(self.output_dir / "train.log", "w", buffering=1)
+        # Log file opened in append mode when resuming an existing run,
+        # write mode for a fresh start. Decided in train() once we know
+        # whether a state.pt exists.
+        self._log_file = None
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def train(self) -> Dict[str, Any]:
+    def train(
+        self,
+        stop_check: Optional[Callable[[], bool]] = None,
+        epoch_callback: Optional[Callable[[int, float, float], bool]] = None,
+    ) -> Dict[str, Any]:
         """
         Run the full training loop for one seed.
 
+        Args:
+            stop_check: optional callable returning True if a graceful stop
+                has been requested (SIGUSR1 handler in the worker). Polled
+                at every epoch boundary — if True, checkpoint then return
+                the partial history with 'stopped_reason'='signal'. The
+                worker's next link then resumes from state.pt.
+            epoch_callback: optional callable invoked at the END of each
+                completed epoch with signature ``(epoch, val_loss, best_val_loss)``.
+                Returns True if training should stop (e.g. Optuna's median-pruner
+                has decided this trial is a loser). When True, the trainer sets
+                'stopped_reason'='pruned', checkpoints, and returns early. Used
+                by HPO v2 (`scripts/hpo_run_optuna.py`); production paths pass None.
+
         Returns:
             Dict with 'train_loss', 'val_loss' history lists, 'stopped_epoch',
-            and 'test_metrics' dict from the best checkpoint.
+            and 'test_metrics' dict from the best checkpoint. If stop_check
+            fires, returns early with 'stopped_reason'='signal' and no
+            'test_metrics' key — successor link will complete the run.
+            If epoch_callback returns True, returns early with
+            'stopped_reason'='pruned' and no 'test_metrics' key.
+
+        Raises:
+            TrainingDiverged: after 3 consecutive non-finite epochs (§5).
         """
         # Record which loss function actually ran, so the archived history
         # is self-describing (per §1 of the 2026-07-28 review directive).
@@ -158,11 +224,21 @@ class Trainer:
             if self._uses_native_loss()
             else type(self.loss_fn).__name__
         )
-        history: Dict[str, Any] = {
+        default_history: Dict[str, Any] = {
             "loss_type": loss_type,
             "train_loss": [], "val_loss": [], "grad_norm": [],
         }
+
+        # Run_Plan_Spec §1.1: resume from state.pt if present.
+        start_epoch, history = self._load_full_state(default_history)
+        # Open log in append mode on resume, write mode on fresh start.
+        log_mode = "a" if start_epoch > 1 else "w"
+        self._log_file = open(self.output_dir / "train.log", log_mode, buffering=1)
+        if start_epoch > 1:
+            self._log_file.write(f"# RESUMED from epoch {start_epoch - 1}\n")
+
         stopped_epoch = self.epochs
+        stopped_reason: Optional[str] = None
 
         with Progress(
             SpinnerColumn(),
@@ -176,8 +252,27 @@ class Trainer:
             epoch_task = progress.add_task(
                 f"[cyan]seed={self.seed}", total=self.epochs
             )
+            # Advance the progress bar to reflect completed epochs when resuming.
+            if start_epoch > 1:
+                progress.update(epoch_task, advance=start_epoch - 1)
 
-            for epoch in range(1, self.epochs + 1):
+            for epoch in range(start_epoch, self.epochs + 1):
+                # Run_Plan_Spec §1.1: seed torch/numpy/python at each epoch
+                # start with f(base_seed, epoch). This makes the epoch's
+                # dataloader shuffle order + dropout patterns identical
+                # between a control run and an interrupted-resumed run.
+                # Applied uniformly (including epoch 1) so the two runs
+                # follow the same reseeding schedule.
+                self._seed_epoch(epoch)
+
+                # Graceful-stop check BEFORE work begins for the epoch.
+                # If SIGUSR1 fired between epochs, exit here — last state
+                # was already checkpointed, successor resumes from epoch.
+                if stop_check is not None and stop_check():
+                    stopped_reason = "signal"
+                    stopped_epoch = epoch - 1
+                    break
+
                 # Exposed on `self` so the native-loss hook can compute
                 # its epoch-dependent `var_coeff` (upstream cosine-annealed).
                 self._epoch = epoch
@@ -190,6 +285,33 @@ class Trainer:
                 history["train_loss"].append(train_loss)
                 history["val_loss"].append(val_loss)
                 history["grad_norm"].append(grad_norm)
+
+                # §5 divergence guard: 3 consecutive non-finite epochs → raise.
+                if not (math.isfinite(train_loss) and math.isfinite(grad_norm)):
+                    self.diverged_streak += 1
+                    if self.diverged_streak >= 3:
+                        # Persist state so the marker is consistent with disk state.
+                        self._save_full_state(epoch, history)
+                        (self.output_dir / "FAILED_DIVERGED").write_text(
+                            f"epoch={epoch} streak={self.diverged_streak} "
+                            f"train_loss={train_loss} grad_norm={grad_norm}\n"
+                        )
+                        self._log_file.write(
+                            f"# DIVERGED at epoch={epoch} streak={self.diverged_streak}\n"
+                        )
+                        self._log_file.close()
+                        raise TrainingDiverged(
+                            epoch=epoch, streak=self.diverged_streak,
+                            last_loss=train_loss, last_norm=grad_norm,
+                        )
+                else:
+                    self.diverged_streak = 0
+
+                # Run_Plan_Spec §1.1: atomic per-epoch state save.
+                # This is the load-bearing piece of the C1 guarantee —
+                # a timeout mid-next-epoch loses at most the next epoch,
+                # never this one.
+                self._save_full_state(epoch, history)
 
                 desc = (
                     f"[cyan]seed={self.seed}[/cyan] "
@@ -209,6 +331,31 @@ class Trainer:
                     step=epoch,
                 )
 
+                # HPO v2 hook: give an external caller (Optuna) a chance to
+                # report val progress and prune the trial. Fires AFTER state
+                # is saved so a pruned trial still leaves a resumable state.pt
+                # on disk (safe if the caller wants to inspect it). Reports
+                # best_val_loss (monotone) not this epoch's val_loss so that
+                # cosine-annealing restart bumps at epochs 10, 30, ... don't
+                # get a recovering trial spuriously killed by MedianPruner.
+                if epoch_callback is not None:
+                    try:
+                        should_stop = bool(epoch_callback(epoch, val_loss, self.best_val_loss))
+                    except Exception:
+                        # Callback errors must not tank the training run —
+                        # log and continue. Optuna's TrialPruned exception
+                        # will still surface via the caller if raised outside.
+                        should_stop = False
+                    if should_stop:
+                        stopped_epoch = epoch
+                        stopped_reason = "pruned"
+                        progress.update(
+                            epoch_task,
+                            description=f"[magenta]Pruned at epoch {epoch}[/magenta]",
+                        )
+                        self._log_file.write(f"# PRUNED at epoch={epoch}\n")
+                        break
+
                 if self.patience_counter >= self.patience:
                     stopped_epoch = epoch
                     progress.update(
@@ -218,6 +365,14 @@ class Trainer:
                     break
 
         history["stopped_epoch"] = stopped_epoch
+        # Run_Plan_Spec §1.1: graceful stop path — successor link resumes
+        # from state.pt and will run this test eval when training truly ends.
+        if stopped_reason == "signal":
+            history["stopped_reason"] = "signal"
+            self._log_file.write(f"# STOPPED_BY_SIGNAL at end_of_epoch={stopped_epoch}\n")
+            self._log_file.close()
+            return history
+
         # End-of-training full-val pass (§1.1): if we've been running on
         # a subsampled val set for checkpoint selection, do one full-val
         # pass at the end so `final_val_loss` in the history reflects
@@ -288,6 +443,13 @@ class Trainer:
                 if self.task == "classification":
                     y = y.float()
                     pred = self._subset_pred_to_label_channels(pred)
+                elif self.task == "regression":
+                    # Univariate regime (Gaibie 2024): if the dataset sliced y
+                    # to a single target channel, slice pred to the matching
+                    # channel so the loss only backprops through that variable.
+                    tv_idx = getattr(self.train_loader.dataset, "target_variable_index", None)
+                    if tv_idx is not None and pred.shape[-1] != y.shape[-1]:
+                        pred = pred[..., tv_idx:tv_idx + 1]
                 loss = self.loss_fn(pred, y)
 
             loss.backward()
@@ -376,6 +538,12 @@ class Trainer:
                 if self.task == "classification":
                     y = y.float()
                     pred = self._subset_pred_to_label_channels(pred)
+                elif self.task == "regression":
+                    # Univariate regime — mirror the _train_epoch slicing so
+                    # train_loss and val_loss remain comparable in scale.
+                    tv_idx = getattr(self.val_loader.dataset, "target_variable_index", None)
+                    if tv_idx is not None and pred.shape[-1] != y.shape[-1]:
+                        pred = pred[..., tv_idx:tv_idx + 1]
                 loss = self.loss_fn(pred, y)
 
             total_loss += loss.item()
@@ -386,6 +554,10 @@ class Trainer:
     def _build_extreme_mask(self, targets_norm: np.ndarray) -> Optional[np.ndarray]:
         """targets_norm: (samples, H, N, d). Returns (samples, H, N, d) bool, or None."""
         if self.thresholds is None or self.norm_mean is None or self.norm_std is None:
+            return None
+        # calendar_hour_relative thresholds are (N, D, 366, 24) — cannot broadcast
+        # against (samples, H, N, d) without per-sample timestamp indexing. Skip.
+        if self.thresholds.ndim != 2:
             return None
         m = self.norm_mean.reshape(1, 1, *self.norm_mean.shape[-2:])
         s = self.norm_std.reshape(1, 1, *self.norm_std.shape[-2:])
@@ -465,14 +637,49 @@ class Trainer:
               f"(preds={preds.nbytes/1e9:.1f}GB targets={targets.nbytes/1e9:.1f}GB)", flush=True)
 
         if self.task == "regression":
-            mask = self._build_extreme_mask(targets)
+            # Univariate regime (Gaibie 2024): the collected `targets` always
+            # has shape (S, H, N, 1) when `target_variable_index` is set.
+            # Two adapter-output shapes are possible for preds:
+            #   (a) (S, H, N, D)  — adapter emits full-D (MTGODE, AGCRN, CLCRN
+            #       — the univariate slice happens at loss time). Need to
+            #       slice preds AND stats to the target channel.
+            #   (b) (S, H, N, 1)  — adapter emits univariate directly (STGODE
+            #       — the univariate slice happens INSIDE the adapter).
+            #       preds already correct shape; only stats need slicing.
+            # In both cases, we end with univariate preds + univariate stats.
+            tv_idx = getattr(self.test_loader.dataset, "target_variable_index", None)
+            mean_ch = self.norm_mean.shape[-1] if self.norm_mean is not None else preds.shape[-1]
+            needs_slice = (tv_idx is not None
+                           and (preds.shape[-1] != targets.shape[-1]
+                                or preds.shape[-1] < mean_ch))
+            if needs_slice:
+                # (a) full-D adapter: slice preds to target channel
+                if preds.shape[-1] > 1:
+                    preds = preds[..., tv_idx:tv_idx + 1]
+                # (a) + (b): always slice stats to target channel
+                eval_mean = self.norm_mean[..., tv_idx:tv_idx + 1] if self.norm_mean is not None else None
+                eval_std  = self.norm_std[...,  tv_idx:tv_idx + 1] if self.norm_std  is not None else None
+                eval_thresholds = self.thresholds[..., tv_idx:tv_idx + 1] if self.thresholds is not None else None
+                eval_var_names  = [self.var_names[tv_idx]] if self.var_names is not None else None
+                # Also swap in the sliced thresholds for _build_extreme_mask
+                saved_thresholds, saved_mean, saved_std = self.thresholds, self.norm_mean, self.norm_std
+                self.thresholds, self.norm_mean, self.norm_std = eval_thresholds, eval_mean, eval_std
+                try:
+                    mask = self._build_extreme_mask(targets)
+                finally:
+                    self.thresholds, self.norm_mean, self.norm_std = saved_thresholds, saved_mean, saved_std
+            else:
+                eval_mean = self.norm_mean
+                eval_std = self.norm_std
+                eval_var_names = self.var_names
+                mask = self._build_extreme_mask(targets)
             metrics = regression.compute_all(
                 preds, targets,
                 extreme_mask=mask,
                 vpt_epsilon=self.vpt_epsilon,
-                mean=self.norm_mean,
-                std=self.norm_std,
-                var_names=self.var_names,
+                mean=eval_mean,
+                std=eval_std,
+                var_names=eval_var_names,
             )
             per_station = metrics.pop("per_station")
             self._save_per_station(per_station)
@@ -530,6 +737,104 @@ class Trainer:
             torch.save(self.adapter.model.state_dict(), self.checkpoint_path)
         else:
             self.patience_counter += 1
+
+    # ------------------------------------------------------------------
+    # Run_Plan_Spec §1.1: per-epoch checkpoint-and-resume
+    # ------------------------------------------------------------------
+
+    def _seed_epoch(self, epoch: int) -> None:
+        """Deterministic per-epoch reseed of torch/numpy/python.
+
+        Called at every epoch start (including epoch 1) so that a control
+        run and an interrupted-resumed run follow the same reseed schedule
+        and therefore produce bit-identical epoch outputs under
+        cudnn.deterministic=True.
+
+        DataLoader shuffle uses torch's global generator by default, so
+        reseeding here fixes the shuffle order for the epoch about to run.
+        """
+        s = _epoch_shuffle_seed(self.seed, epoch)
+        torch.manual_seed(s)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(s)
+        np.random.seed(s & 0xFFFF_FFFF)  # numpy wants uint32
+        random.seed(s)
+
+    def _save_full_state(self, epoch: int, history: Dict[str, Any]) -> None:
+        """Atomic write of full training state to state.pt.
+
+        Writes state.pt.tmp then os.replace — atomic on POSIX and cluster
+        filesystems (Lustre, GPFS). A crash mid-write leaves either the
+        old state.pt intact or the new one — never a torn file.
+        """
+        state = {
+            "epoch": int(epoch),
+            "model_state": self.adapter.model.state_dict(),
+            "optimizer_state": self.optimiser.state_dict(),
+            "scheduler_state": self.scheduler.state_dict(),
+            "best_val_loss": float(self.best_val_loss),
+            "patience_counter": int(self.patience_counter),
+            "diverged_streak": int(self.diverged_streak),
+            "history": history,
+            "seed": int(self.seed),
+            "rng_state": {
+                "torch_cpu": torch.get_rng_state(),
+                "torch_cuda_all": (
+                    torch.cuda.get_rng_state_all()
+                    if torch.cuda.is_available() else []
+                ),
+                "numpy": np.random.get_state(),
+                "python": random.getstate(),
+            },
+        }
+        tmp = self.output_dir / "state.pt.tmp"
+        torch.save(state, tmp)
+        os.replace(tmp, self.state_path)
+
+    def _load_full_state(
+        self, default_history: Dict[str, Any]
+    ) -> tuple[int, Dict[str, Any]]:
+        """Load state.pt if it exists; return (start_epoch, history).
+
+        Fresh start returns (1, default_history). Resume returns
+        (last_completed_epoch + 1, restored_history). Restores model,
+        optimizer, scheduler, best-val, patience counter, divergence
+        streak, and RNG states (torch CPU + cuda-all, numpy, python).
+        """
+        if not self.state_path.exists():
+            return 1, default_history
+
+        # Load with map_location='cpu' so RNG ByteTensors stay on CPU
+        # (torch.set_rng_state rejects non-CPU tensors). Model + optimizer
+        # tensors are moved back to self.device explicitly below.
+        state = torch.load(
+            self.state_path, map_location="cpu", weights_only=False
+        )
+        self.adapter.model.load_state_dict(state["model_state"])
+        self.adapter.model.to(self.device)
+        self.optimiser.load_state_dict(state["optimizer_state"])
+        # optimizer.load_state_dict does not move tensors — walk and move.
+        for opt_state in self.optimiser.state.values():
+            for k, v in opt_state.items():
+                if isinstance(v, torch.Tensor):
+                    opt_state[k] = v.to(self.device)
+        self.scheduler.load_state_dict(state["scheduler_state"])
+        self.best_val_loss = float(state["best_val_loss"])
+        self.patience_counter = int(state["patience_counter"])
+        self.diverged_streak = int(state.get("diverged_streak", 0))
+
+        rng = state["rng_state"]
+        # RNG ByteTensors must be on CPU for set_rng_state; on GPU for cuda.
+        torch.set_rng_state(rng["torch_cpu"].cpu() if hasattr(rng["torch_cpu"], "cpu") else rng["torch_cpu"])
+        if torch.cuda.is_available() and rng["torch_cuda_all"]:
+            # torch.cuda.set_rng_state_all accepts CPU ByteTensors and moves them.
+            torch.cuda.set_rng_state_all([t.cpu() if hasattr(t, "cpu") else t for t in rng["torch_cuda_all"]])
+        np.random.set_state(rng["numpy"])
+        random.setstate(rng["python"])
+
+        start_epoch = int(state["epoch"]) + 1
+        history = state.get("history", default_history)
+        return start_epoch, history
 
     def _mlflow_log_metrics(self, metrics: Dict[str, float], step: Optional[int] = None) -> None:
         if not self.mlflow_enabled:
