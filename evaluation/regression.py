@@ -146,6 +146,11 @@ def compute_all(
     mse_nd = per_station_var_mse(p, t)
     smape_nd = per_station_var_smape(p, t)
 
+    # per-horizon metrics — physical units, station-pooled, shape (H, d)
+    _err = p - t   # (S, H, N, d)
+    mae_h  = np.nanmean(np.abs(_err), axis=(0, 2))          # (H, d)
+    rmse_h = np.sqrt(np.nanmean(_err ** 2, axis=(0, 2)))    # (H, d)
+
     if extreme_mask is not None:
         mask4d = _as_4d_mask(extreme_mask, (samples, H, N, d))
         mae_ext_nd, mae_non_nd = stratified_var_mae(p, t, mask4d)
@@ -169,6 +174,8 @@ def compute_all(
         "mae_nonextreme": by_var(mae_non_nd),
         "peak_intensity_error": by_var(pie_nd),
         "nrmse_per_horizon": {var_names[v]: nrmse_curve[:, v].tolist() for v in range(d)},
+        "mae_per_horizon":   {var_names[v]: mae_h[:, v].tolist()    for v in range(d)},
+        "rmse_per_horizon":  {var_names[v]: rmse_h[:, v].tolist()   for v in range(d)},
         "vpt": vpt,
         "mae_pooled_norm": float(np.abs(preds - targets).mean()),   # z-space monitor only
         "per_station": {
