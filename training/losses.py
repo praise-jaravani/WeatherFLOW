@@ -1,7 +1,16 @@
 """
 Loss functions for regression and classification tasks.
 
-MSE  — Phase 1 regression. Standard mean squared error.
+MAE  — Phase 1 regression (uniform across MTGODE, AGCRN, CLCRN as of the
+       2026-08-08 methodology audit + loss decision). Provenance:
+         * MTGODE (Jin et al., §4.4): "ℓ(·) denotes the mean absolute error"
+         * AGCRN official repo default: `loss_func = mae` → `nn.L1Loss()`
+         * CLCRN official repo default: `masked_mae_loss`
+         * Chikwanha's GraphWaveNet baseline (USTD, `gwavenet_model.py::mae_loss`)
+       Diverges from Davidson & Moodley (2022), who trained with MSE — the
+       single documented departure. See specs/HYPERPARAMETERS.md.
+
+MSE  — kept as a reference metric (never as the training objective post-audit).
 
 WBCE — Phase 2 classification (per-variable multi-label formulation).
 
@@ -29,8 +38,26 @@ import torch
 import torch.nn as nn
 
 
+def mae_loss() -> nn.Module:
+    """Return the MAE (L1) loss module used for Phase 1 regression.
+
+    Uniform across MTGODE, AGCRN, CLCRN post-2026-08-08 audit. See module
+    docstring for provenance chain. Plain (unmasked) L1 is correct here: the
+    pipeline's IDW imputation policy fills missing values before training, so
+    no missing-value mask is required (unlike CLCRN's traffic setting where
+    `masked_mae` skipped 0-valued cells). In the univariate normalised regime
+    the optimum matches CLCRN's denormalised masked-MAE up to a scale factor.
+    """
+    return nn.L1Loss()
+
+
 def mse_loss() -> nn.Module:
-    """Return the MSE loss module used for Phase 1 regression."""
+    """Return the MSE loss module — retained as a REFERENCE metric only.
+
+    Not used as a training objective post-2026-08-08 audit; the regression
+    training loss is `mae_loss()`. Kept in the module so downstream code that
+    computes MSE for reporting/comparability (e.g. RMSE tables) can import it.
+    """
     return nn.MSELoss()
 
 

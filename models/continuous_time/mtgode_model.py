@@ -21,6 +21,22 @@ philosophy as AGCRN). The static adj from preprocessing is not used.
 
 Device note: MTGODE stores self.idx as a plain attribute (not a registered
 buffer), so it is not moved by .to(device). The wrapper fixes this in forward().
+
+Audit fixes (2026-08-08, per external audit trailer):
+  - Finding 0 (adjoint): torchdiffeq.odeint_adjoint runs forward under no_grad
+    and only backprops through `func.parameters()`. The graph learner (gc.emb1,
+    gc.emb2, gc.lin1, gc.lin2) is *attached to the ODEBlock via setGraph()*, not
+    part of func.parameters(), so under adjoint=True its gradients are None and
+    it stays at random initialisation for the whole run. Default flipped to
+    False. At N=25/32 there is no memory case for adjoint mode.
+  - Finding 2 (node_dim decoupled from hidden_dim): the paper (§5.2) adopts
+    MTGNN's graph-learner settings verbatim, which pins node embedding dim = 40.
+    Prior code read node_dim=hidden_dim (=64), which is not the paper's value.
+    Now read from graph_constructor.node_dim (default 40); hidden_dim still
+    controls conv_channels only.
+  - Finding 5 (cgp_alpha): CGPFunc computes f = 0.5·α·(Âx − x). Paper Eq. 6 is
+    dH/dt = (Â − I)H, which requires α=2.0. Prior code hardcoded α=1.0 (halved
+    vector field). Now read from ode.cgp_alpha (default 2.0).
 """
 
 import importlib.util
@@ -71,6 +87,7 @@ class MTGODEModel(nn.Module):
 
         model_cfg = config.get("model", config)
         ode_cfg   = config.get("ode", {})
+        gc_cfg    = model_cfg.get("graph_constructor", {}) or {}
 
         d  = config["input_dim"]
         H  = config["horizon"]
@@ -79,31 +96,47 @@ class MTGODEModel(nn.Module):
         self.H = H
         self.d = d
 
+        # Finding 2 (audit 2026-08-08): node_dim is the graph-learner embedding
+        # dim, NOT conv_channels. Paper §5.2 pins it at 40 via MTGNN inheritance.
+        # Prior code read node_dim=hidden_dim(=64), which conflated the two.
+        node_dim     = int(gc_cfg.get("node_dim", 40))
+        conv_channels = int(model_cfg.get("hidden_dim", 64))
+
+        # Finding 0 (audit 2026-08-08): adjoint=True + a graph learner attached
+        # via setGraph() severs gc.emb1/emb2/lin1/lin2 gradients (they are
+        # neither in y0 nor func.parameters()). Default is now False. At N=32
+        # activations are tiny; no memory argument for adjoint mode.
+        adjoint = bool(ode_cfg.get("adjoint", False))
+
+        # Finding 5 (audit 2026-08-08): CGPFunc computes f = 0.5·α·(Âx − x).
+        # Paper Eq. 6 dH/dt = (Â − I)H requires α=2.0. Prior code hardcoded 1.0.
+        cgp_alpha = float(ode_cfg.get("cgp_alpha", 2.0))
+
         self.net = MTGODE(
             buildA_true=True,
             num_nodes=num_nodes,
             device=torch.device("cpu"),        # moved to GPU later via .to(device)
             predefined_A=None,
             dropout=float(model_cfg.get("dropout", 0.3)),
-            subgraph_size=int(model_cfg.get("graph_constructor", {}).get("k", 10)),
-            node_dim=int(model_cfg.get("hidden_dim", 40)),
+            subgraph_size=int(gc_cfg.get("k", 10)),
+            node_dim=node_dim,
             dilation_exponential=1,
-            conv_channels=int(model_cfg.get("hidden_dim", 40)),
+            conv_channels=conv_channels,
             end_channels=128,
             seq_length=T,
             in_dim=d,
             out_dim=H * d,
-            tanhalpha=float(model_cfg.get("graph_constructor", {}).get("alpha", 3)),
+            tanhalpha=float(gc_cfg.get("alpha", 3)),
             method_1=ode_cfg.get("method_1", "euler"),
-            time_1=float(ode_cfg.get("time_1", 1.2)),
-            step_size_1=float(ode_cfg.get("step_size_1", 0.4)),
+            time_1=float(ode_cfg.get("time_1", 1.0)),
+            step_size_1=float(ode_cfg.get("step_size_1", 0.25)),
             method_2=ode_cfg.get("method_2", "euler"),
             time_2=float(ode_cfg.get("time_2", 1.0)),
             step_size_2=float(ode_cfg.get("step_size_2", 0.25)),
-            alpha=1.0,
+            alpha=cgp_alpha,
             rtol=float(ode_cfg.get("rtol", 1e-4)),
             atol=float(ode_cfg.get("atol", 1e-3)),
-            adjoint=bool(ode_cfg.get("adjoint", True)),
+            adjoint=adjoint,
             perturb=False,
             ln_affine=True,
         )

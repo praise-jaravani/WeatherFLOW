@@ -155,6 +155,7 @@ def backfill_run(
 
     # ── build test DataLoader ────────────────────────────────────────────────
     config     = _get_config(model_name)
+    config["data"]["target_variable"] = target_var   # STGODE: selects dtw_matrix_{var}.npy
     input_len  = config["data"]["input_len"]
     horizon    = config["data"]["horizon"]
     batch_size = config["training"]["batch_size"]
@@ -199,6 +200,14 @@ def backfill_run(
         state = state["model_state_dict"]
     adapter.model.load_state_dict(state)
     adapter.model.eval()
+    # trainer.py never called .eval() so stored metrics used BatchNorm batch statistics,
+    # not running buffers. Restore that path: set BN layers to train mode (batch stats)
+    # with momentum=0 so running buffers aren't updated as a side effect of inference.
+    for _m in adapter.model.modules():
+        if isinstance(_m, (torch.nn.BatchNorm1d, torch.nn.BatchNorm2d,
+                           torch.nn.BatchNorm3d)):
+            _m.train()
+            _m.momentum = 0
 
     # ── inference ────────────────────────────────────────────────────────────
     all_preds, all_targets = [], []
@@ -264,11 +273,14 @@ def backfill_run(
         else:
             print(f"  WARNING: nrmse shape mismatch stored={stored_nrmse.shape} recomputed={recomp_nrmse.shape}, skipping curve gate")
 
-    gate_pass  = all(v[0] <= REL_TOL for v in gate_results.values())
-    gate_lines = [
-        f"    {mn}: stored={v[1]:.6f}  recomputed={v[2]:.6f}  rel_err={v[0]:.2e}  {'OK' if v[0]<=REL_TOL else 'FAIL'}"
-        for mn, v in gate_results.items()
-    ]
+    tol = REL_TOL
+    gate_pass  = all(v[0] <= tol for v in gate_results.values())
+    gate_lines = []
+    for mn, v in gate_results.items():
+        status = "OK" if v[0] <= tol else "FAIL"
+        gate_lines.append(
+            f"    {mn}: stored={v[1]:.6f}  recomputed={v[2]:.6f}  rel_err={v[0]:.2e}  {status}"
+        )
     print(f"  gate ({elapsed_s:.1f}s inference):")
     for line in gate_lines:
         print(line)
@@ -299,7 +311,10 @@ def backfill_run(
     print(f"  per-horizon consistency: mae_rel={relerr_mae:.2e}  rmse_rel={relerr_rmse:.2e}")
 
     # ── backup + patch summary.json ───────────────────────────────────────────
-    shutil.copy2(run_dir / "summary.json", run_dir / "summary.json.pre_backfill")
+    # Guard: only write .pre_backfill once — never overwrite the true original.
+    pre_backfill = run_dir / "summary.json.pre_backfill"
+    if not pre_backfill.exists():
+        shutil.copy2(run_dir / "summary.json", pre_backfill)
 
     tm["mae_extreme"][target_var]          = new_ext
     tm["mae_nonextreme"][target_var]       = new_non
@@ -325,7 +340,7 @@ def backfill_run(
                               "mae_per_horizon", "rmse_per_horizon",
                               "n_params", "per_station.npz", "test_preds.npy", "test_targets.npy"],
         "gate_max_rel_err":  max(v[0] for v in gate_results.values()),
-        "gate_tolerance":    REL_TOL,
+        "gate_tolerance":    tol,
         "device":            str(device),
     }
     _save_summary(run_dir, summary)
@@ -366,10 +381,19 @@ def main():
                         help="Re-patch runs that already have non-NaN extreme metrics")
     parser.add_argument("--models",  default="clcrn",
                         help="Comma-separated model names, or 'all'  (default: clcrn)")
+    parser.add_argument("--runs",    default=None,
+                        help="Comma-separated run dir names to process (e.g. stgode_t2m_s43); "
+                             "overrides --models when given")
+    parser.add_argument("--rel-tol", type=float, default=None,
+                        help="Override gate tolerance (default: REL_TOL=5e-3)")
     args = parser.parse_args()
 
+    if args.rel_tol is not None:
+        global REL_TOL
+        REL_TOL = args.rel_tol
+
     device = torch.device(args.device)
-    print(f"Device: {device}  dry-run: {args.dry_run}  force: {args.force}  models: {args.models}")
+    print(f"Device: {device}  dry-run: {args.dry_run}  force: {args.force}  models: {args.models}  rel_tol: {REL_TOL}")
 
     # Determinism — CLCRN gather/scatter ops are non-deterministic otherwise
     torch.backends.cudnn.deterministic = True
@@ -407,6 +431,7 @@ def main():
 
     # ── enumerate regression run directories ──────────────────────────────────
     runs_dir = ROOT / "runs"
+    explicit_runs = {r.strip() for r in args.runs.split(",")} if args.runs else None
     candidate_runs = []
     for d in sorted(runs_dir.iterdir()):
         if not d.is_dir():
@@ -417,8 +442,12 @@ def main():
             continue
         model_name = parts[0]
         var        = parts[1]
-        if model_name not in target_models or var not in REG_VARS:
-            continue
+        if explicit_runs is not None:
+            if d.name not in explicit_runs:
+                continue
+        else:
+            if model_name not in target_models or var not in REG_VARS:
+                continue
         if not (d / "summary.json").exists():
             continue
         candidate_runs.append((d, model_name))

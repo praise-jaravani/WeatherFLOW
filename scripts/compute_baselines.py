@@ -25,6 +25,7 @@ Memory strategy: chunk over samples axis. Peak RSS should be <20 GB for
 chunk=2000, well within any HPC allocation.
 """
 from __future__ import annotations
+import argparse
 import json
 import os
 import sys
@@ -32,17 +33,31 @@ from pathlib import Path
 
 import numpy as np
 
-CACHE = Path(__file__).parent.parent / "preprocessing" / "cache" / "era5"
-OUT   = Path(__file__).parent.parent / "results" / "baselines"
-OUT.mkdir(parents=True, exist_ok=True)
-# Files use self-descriptive names (e.g. classification-persistence.json)
-# so they're clear when uploaded to external tools individually.
-
+# Dataset-specific defaults (2026-08-06 SAWS 25-node campaign added).
+# ERA5: 12h horizon, 999-node, ERA5 var lineage.
+# SAWS: 48h horizon (Moodley 24h+ demand), 25-node, SAWS var lineage.
+DATASET_DEFAULTS = {
+    "era5": {
+        "cache_subdir": "era5",
+        "horizon": 12,
+        "label_vars": ["t2m", "d2m", "tp", "ws10", "rh", "sp"],
+    },
+    "saws": {
+        "cache_subdir": "saws",
+        "horizon": 48,
+        "label_vars": ["t2m", "tp", "rh", "wd", "ws", "sp"],
+    },
+}
 INPUT_LEN = 12
-HORIZON   = 12
-LABEL_VARS = ["t2m", "d2m", "tp", "ws10", "rh", "sp"]
 VPT_EPSILON = 0.3
 CHUNK = 2000   # samples per chunk
+
+# Set from CLI at main() entry; module globals kept for backward compatibility
+# with the internal helpers that reference them by name.
+CACHE: Path = Path()
+OUT: Path = Path()
+HORIZON: int = 0
+LABEL_VARS: list = []
 
 
 def load_arrays():
@@ -174,6 +189,11 @@ def regression_baseline_metrics(pred_fn, name, X_test, mean, std, thresholds, va
     nrmse_curve = np.sqrt(sq_err_norm_sum_hd / count_hd)   # (H, d)
     nrmse_per_horizon = {var_names[v]: nrmse_curve[:, v].tolist() for v in range(d)}
 
+    # MAE and RMSE per horizon (physical units): mean over samples and stations at each step
+    n_per_step = n_samples * N
+    mae_per_horizon  = {var_names[v]: (abs_err_sum[:, :, v].sum(axis=1) / n_per_step).tolist() for v in range(d)}
+    rmse_per_horizon = {var_names[v]: np.sqrt(sq_err_sum[:, :, v].sum(axis=1) / n_per_step).tolist() for v in range(d)}
+
     # VPT
     def vpt_from_curve(curve):
         above = np.where(np.asarray(curve) >= VPT_EPSILON)[0]
@@ -199,6 +219,8 @@ def regression_baseline_metrics(pred_fn, name, X_test, mean, std, thresholds, va
         "mse": mse_per_var,
         "mae_extreme": mae_extreme_per_var,
         "mae_nonextreme": mae_nonextreme_per_var,
+        "mae_per_horizon": mae_per_horizon,
+        "rmse_per_horizon": rmse_per_horizon,
         "nrmse_per_horizon": nrmse_per_horizon,
         "vpt": vpt,
         "n_samples": int(n_samples),
@@ -365,6 +387,23 @@ def save_json(path, obj):
 
 
 if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dataset", choices=list(DATASET_DEFAULTS.keys()), default="era5",
+                    help="which cached dataset to compute baselines for")
+    ap.add_argument("--out", default=None,
+                    help="output directory (default: results/baselines/)")
+    ap.add_argument("--skip-classification", action="store_true",
+                    help="regression baselines only (skip classification)")
+    args = ap.parse_args()
+
+    ds = DATASET_DEFAULTS[args.dataset]
+    CACHE = Path(__file__).parent.parent / "preprocessing" / "cache" / ds["cache_subdir"]
+    OUT = Path(args.out) if args.out else (Path(__file__).parent.parent / "results" / "baselines")
+    OUT.mkdir(parents=True, exist_ok=True)
+    HORIZON = ds["horizon"]
+    LABEL_VARS = ds["label_vars"]
+    print(f"Dataset: {args.dataset}  cache={CACHE}  out={OUT}  horizon={HORIZON}  label_vars={LABEL_VARS}")
+
     X_train, X_test, y_train, y_test, mean, std, thresholds, var_names = load_arrays()
 
     # Precompute climatology inputs
@@ -378,17 +417,6 @@ if __name__ == "__main__":
     train_mean_norm = (train_mean_sum / n_rows).astype(np.float32)
     print(f"  train_mean_norm |mean|={np.abs(train_mean_norm).mean():.4f} (~0 by z-score construction)")
 
-    label_idx = [var_names.index(v) for v in LABEL_VARS]
-    print("Computing training-set positive rate per (station, variable)...", flush=True)
-    train_rate_sum = np.zeros((X_train.shape[1], len(LABEL_VARS)), dtype=np.float64)
-    n_rows_y = 0
-    for start in range(0, y_train.shape[0], 20000):
-        block = np.asarray(y_train[start : start + 20000][..., label_idx], dtype=np.float64)
-        train_rate_sum += block.sum(axis=0)
-        n_rows_y += block.shape[0]
-    train_rate = (train_rate_sum / n_rows_y).astype(np.float32)
-    print(f"  mean positive rate per var: {train_rate.mean(axis=0)}")
-
     reg_persist  = regression_baseline_metrics(
         lambda cs, ce: _persistence_pred(X_test, cs, ce), "persistence",
         X_test, mean, std, thresholds, var_names,
@@ -401,17 +429,31 @@ if __name__ == "__main__":
     )
     save_json(OUT / "regression-climatology.json", reg_climate)
 
-    y_test_lab = np.asarray(y_test)[..., label_idx].astype(np.int8)
-    cls_persist  = classification_baseline_metrics(
-        lambda cs, ce: _persistence_cls_pred(y_test_lab, cs, ce), "persistence",
-        y_test, var_names,
-    )
-    save_json(OUT / "classification-persistence.json", cls_persist)
+    if args.skip_classification:
+        print("\n--skip-classification set — regression baselines only.")
+    else:
+        label_idx = [var_names.index(v) for v in LABEL_VARS]
+        print("Computing training-set positive rate per (station, variable)...", flush=True)
+        train_rate_sum = np.zeros((X_train.shape[1], len(LABEL_VARS)), dtype=np.float64)
+        n_rows_y = 0
+        for start in range(0, y_train.shape[0], 20000):
+            block = np.asarray(y_train[start : start + 20000][..., label_idx], dtype=np.float64)
+            train_rate_sum += block.sum(axis=0)
+            n_rows_y += block.shape[0]
+        train_rate = (train_rate_sum / n_rows_y).astype(np.float32)
+        print(f"  mean positive rate per var: {train_rate.mean(axis=0)}")
 
-    cls_climate  = classification_baseline_metrics(
-        lambda cs, ce: _climatology_cls_pred(train_rate, ce - cs), "climatology",
-        y_test, var_names,
-    )
-    save_json(OUT / "classification-climatology.json", cls_climate)
+        y_test_lab = np.asarray(y_test)[..., label_idx].astype(np.int8)
+        cls_persist  = classification_baseline_metrics(
+            lambda cs, ce: _persistence_cls_pred(y_test_lab, cs, ce), "persistence",
+            y_test, var_names,
+        )
+        save_json(OUT / "classification-persistence.json", cls_persist)
+
+        cls_climate  = classification_baseline_metrics(
+            lambda cs, ce: _climatology_cls_pred(train_rate, ce - cs), "climatology",
+            y_test, var_names,
+        )
+        save_json(OUT / "classification-climatology.json", cls_climate)
 
     print("\nAll baselines computed.")

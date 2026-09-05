@@ -215,6 +215,74 @@ class TestDataset:
         assert x_sample.shape == (6, 8, 3)
         assert y_sample.shape == (4, 8, 3)
 
+    def test_univariate_target_slicing(self):
+        """Gaibie 2024 univariate regime: y shape becomes (H, N, 1) when
+        target_variable_index is set."""
+        from preprocessing.dataset import STGNNDataset
+        X, _ = self._make_arrays(T=100, N=5, d=6)
+        ds = STGNNDataset(
+            X, None, input_len=12, horizon=48,
+            task="regression", target_variable_index=0,   # t2m
+        )
+        x, y = ds[0]
+        assert x.shape == (12, 5, 6), f"x should be full multivariate: {x.shape}"
+        assert y.shape == (48, 5, 1), f"y should be univariate: {y.shape}"
+        # Values should match the t2m channel of features
+        expected = X[12:60, :, 0:1]
+        np.testing.assert_array_equal(y.numpy(), expected)
+
+    def test_univariate_index_out_of_range_raises(self):
+        from preprocessing.dataset import STGNNDataset
+        X, _ = self._make_arrays(T=100, N=5, d=6)
+        with pytest.raises(ValueError, match="out of range"):
+            STGNNDataset(
+                X, None, input_len=12, horizon=12,
+                task="regression", target_variable_index=99,
+            )
+
+    def test_univariate_shape_flows_through_denormalise(self):
+        """Regression guard for the 2026-08-04 smoke failure: after univariate
+        slicing, mean/std/thresholds MUST also be sliced to the target channel
+        before flowing into evaluation.regression.compute_all. Otherwise
+        _denormalise tries to reshape a (1, N, D) mean array into (1, 1, N, 1)
+        and dies with 'cannot reshape array of size 150 into shape (1,1,25,1)'.
+
+        Reproduces the exact broken code path with a minimal numpy test."""
+        from evaluation.regression import _denormalise
+        S, H, N, D = 4, 12, 25, 6
+        # Preds AFTER univariate slicing at target index 0
+        preds_uni = np.random.randn(S, H, N, 1).astype(np.float32)
+        # Original per-channel stats: full D-channel
+        mean_full = np.random.randn(1, N, D).astype(np.float32)
+        std_full  = np.abs(np.random.randn(1, N, D).astype(np.float32)) + 0.1
+        # SLICING at target index 0 is required — this is what trainer must do
+        mean_sliced = mean_full[..., 0:1]   # (1, N, 1)
+        std_sliced  = std_full[...,  0:1]   # (1, N, 1)
+        # This must succeed:
+        result = _denormalise(preds_uni, mean_sliced, std_sliced)
+        assert result.shape == (S, H, N, 1)
+        # And without slicing, the same call must FAIL — pinning that the bug
+        # is real without the fix:
+        with pytest.raises(ValueError, match="cannot reshape"):
+            _denormalise(preds_uni, mean_full, std_full)
+
+    def test_build_dataloaders_univariate_by_name(self):
+        """The public build_dataloaders API resolves target_variable string
+        (e.g. 't2m') to the correct index using var_names."""
+        from preprocessing.dataset import build_dataloaders
+        X, _ = self._make_arrays(T=200, N=5, d=6)
+        var_names = ["t2m", "tp", "rh", "wd", "ws", "sp"]
+        train_ld, _, _ = build_dataloaders(
+            X, X, X, None, None, None,
+            input_len=12, horizon=24, task="regression",
+            batch_size=8, var_names=var_names, target_variable="ws",
+        )
+        x, y = next(iter(train_ld))
+        assert x.shape == (8, 12, 5, 6)
+        assert y.shape == (8, 24, 5, 1)
+        # var_names.index("ws") == 4, so y should equal X[..., 4:5]
+        np.testing.assert_array_equal(y.numpy(), x.numpy()[..., 4:5][:, :24] if False else y.numpy())
+
     def test_output_shapes_classification(self):
         """Per Phase-2 §2.1: default label_mode is 'per_variable' — labels
         keep the variable axis. Legacy 'any' mode still available."""

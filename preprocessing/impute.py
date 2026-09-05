@@ -90,4 +90,21 @@ def idw_impute(
                 w = (1.0 / dists[valid] ** power)
                 X_filled[t, i, var] = float(np.dot(w, vals[valid]) / w.sum())
 
+    # Temporal-fill fallback: residual NaN after spatial IDW happens when a
+    # simultaneous regional outage leaves all k neighbours missing at the same
+    # hour (e.g. SAWS 2020-12-31 01:00-23:00 across 9 Cape stations from a
+    # Lekuba extract cutoff). Fall back to per-(station, variable) forward-fill
+    # then backward-fill along the time axis so short outages inherit from the
+    # nearest valid hour at the same station.
+    residual = np.isnan(X_filled).sum()
+    if residual:
+        # pandas ffill+bfill per (station, variable) column via a (T, N*d) reshape
+        flat = X_filled.reshape(T, N * d)
+        df = pd.DataFrame(flat).ffill().bfill()
+        X_filled = df.to_numpy(dtype=np.float32).reshape(T, N, d)
+        still = np.isnan(X_filled).sum()
+        # Should be zero unless a whole (station, variable) column is entirely
+        # missing — which the exclusion step above prevents.
+        assert still == 0, f"temporal fallback left {still} NaN cells"
+
     return X_filled

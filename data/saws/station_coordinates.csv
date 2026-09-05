@@ -1,0 +1,26 @@
+station,latitude,longitude,elevation_m,climate_number,source_note
+BEAUFORT-WES,-32.3572,22.5775,899,68727,Meteostat WMO 68727 (SAWS town station; approx ~500 m from town centre)
+CAPE TOWN WO,-33.9694,18.5972,46,68816,Wikipedia FACT + Meteostat WMO 68816 (Cape Town Intl Airport)
+CRADOCK-MUN,-32.1667,25.6167,927,68744,Meteostat WMO 68744 (Cradock town/municipal station)
+GEORGE WO,-34.0067,22.3808,195,68828,Wikipedia FAGG + Meteostat WMO 68828 (George Airport)
+KIMBERLEY WO,-28.8017,24.7636,1200,68438,Wikipedia FAKM + Meteostat WMO 68438 (Kimberley Airport)
+PRINS ALBERT - SWARTRIVIER,-33.1731,22.0302,700,68823,Swartrivier Farm GPS from oforolive.co.za (Swartberg plateau ~700m); Meteostat WMO 68823 differs slightly at -33.1833/22.0167 elev 544
+QUEENSTOWN,-31.9175,26.8783,1104,68647,Meteostat WMO 68647 (Queenstown/Komani town; ~1 km from FAQT aerodrome 68648)
+REDELINGSHUYS-AWS,-32.4789,18.5381,20,,Wikipedia village coords (approximate; SAWS AWS not in Meteostat/WMO index)
+SUTHERLAND,-32.3833,20.6667,1459,68722,Meteostat WMO 68722 (SAWS town station; distinct from SAAO at -32.3783/20.8105 elev 1798)
+WORCESTER-AWS,-33.6639,19.4183,199,68821,Meteostat WMO 68821 (Worcester AWS)
+ALEXANDERBAAI,-28.57,16.5287,,68403,stations.csv
+BLOEMFONTEIN WO,-29.1039,26.2981,0.0,3153,data2.xls (in-file)
+CALVINIA WO,-31.4819,19.7617,,68618,stations.csv
+EAST LONDON WO,-33.035,27.816,134.0,0059572,block-format (Gen's extract)
+GARIEP DAM,-30.5621,25.527800000000003,0.0,9124,data2.xls (in-file)
+GREYTOWN,-29.0832,30.6034,0.0,9275,data2.xls (in-file)
+KING SHAKA INTERNATIONAL AIRPORT WO,-29.6108,31.1239,0.0,10083,data2.xls (in-file)
+KNELLPOORTDAM,-29.7861,26.9031,0.0,2818,data2.xls (in-file)
+KOKSTAD,-30.5028,29.3942,0.0,9424,data2.xls (in-file)
+KROONSTAD,-27.6665,27.3136,0.0,9284,data2.xls (in-file)
+MOOI RIVER,-29.218000000000004,30.0025,0.0,9328,data2.xls (in-file)
+PORT ELIZABETH AWOS,-33.986,25.616,60.0,0035209,block-format (Gen's extract)
+UMTHATHA WO,-31.549,28.673,745.0,0127272,block-format (Gen's extract)
+UPINGTON WO,-28.4111,21.2641,,68424,stations.csv
+VAN ZYLSRUS,-26.8774,22.0499,,68329,stations.csv

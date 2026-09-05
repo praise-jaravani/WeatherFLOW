@@ -36,6 +36,7 @@ class STGNNDataset(Dataset):
         task: str,
         label_mode: str = "per_variable",
         label_indices: Optional[Sequence[int]] = None,
+        target_variable_index: Optional[int] = None,
     ):
         """
         Args:
@@ -50,6 +51,14 @@ class STGNNDataset(Dataset):
                         subset via ``max`` to (horizon, N).
             label_indices: indices into the variable axis to use as label
                         channels. Required when task == 'classification'.
+            target_variable_index: if not None AND task == 'regression', y is
+                        sliced to only that channel — shape (horizon, N, 1).
+                        Matches Gaibie et al. (2024) univariate output regime
+                        (one experiment per target variable). Downstream loss
+                        computation must therefore compare pred[..., idx:idx+1]
+                        to y — the model still outputs D channels, but only
+                        the target channel contributes to the loss (functionally
+                        equivalent to a single-output head).
         """
         assert task in ("regression", "classification"), f"unknown task {task}"
         if task == "classification":
@@ -82,6 +91,14 @@ class STGNNDataset(Dataset):
         # Store as a LongTensor so PyTorch indexing works cleanly.
         self.label_indices = (torch.as_tensor(list(label_indices), dtype=torch.long)
                               if label_indices is not None else None)
+        # Univariate regression target index (Gaibie regime). None → multivariate.
+        self.target_variable_index = target_variable_index
+        if (target_variable_index is not None
+                and not 0 <= target_variable_index < features.shape[-1]):
+            raise ValueError(
+                f"target_variable_index {target_variable_index} out of range "
+                f"[0, {features.shape[-1]})"
+            )
         self.n_samples  = len(features) - input_len - horizon + 1
 
     def __len__(self) -> int:
@@ -96,7 +113,13 @@ class STGNNDataset(Dataset):
         x = self.features[x_start:x_end]                            # (input_len, N, d)
 
         if self.task == "regression":
-            return x, self.features[y_start:y_end]                  # (horizon, N, d)
+            y = self.features[y_start:y_end]                        # (horizon, N, d)
+            if self.target_variable_index is not None:
+                # Univariate regime per Gaibie (2024). Slice to a single
+                # variable channel — model still outputs D channels but
+                # trainer's _compute_loss must only compare this one.
+                y = y[..., self.target_variable_index:self.target_variable_index + 1]
+            return x, y
 
         # Classification: index the pre-computed binary label tensor. Labels
         # are stored as int8; cast the small window slice to float32 here so
@@ -140,6 +163,7 @@ def build_dataloaders(
     label_mode: str = "per_variable",
     var_names: Optional[Sequence[str]] = None,
     label_variables: Optional[Sequence[str]] = None,
+    target_variable: Optional[str] = None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
     Return (train_loader, val_loader, test_loader).
@@ -148,16 +172,30 @@ def build_dataloaders(
     from `var_names` + `label_variables` and passed as an index tensor to each
     Dataset. If `label_variables` is None, all variables in `var_names` are
     used (matching the regression variable set exactly).
+
+    When `task == 'regression'` and `target_variable` is set, the dataset
+    slices y to that variable's channel (Gaibie 2024 univariate regime).
     """
     if task == "classification":
         label_indices = _resolve_label_indices(var_names or [], label_variables)
     else:
         label_indices = None
 
+    target_variable_index = None
+    if task == "regression" and target_variable is not None:
+        if var_names is None:
+            raise ValueError("target_variable requires var_names")
+        if target_variable not in var_names:
+            raise ValueError(
+                f"target_variable={target_variable!r} not in var_names {list(var_names)}"
+            )
+        target_variable_index = list(var_names).index(target_variable)
+
     def _make(feats, labs, shuffle):
         ds = STGNNDataset(
             feats, labs, input_len, horizon, task,
             label_mode=label_mode, label_indices=label_indices,
+            target_variable_index=target_variable_index,
         )
         return DataLoader(
             ds,

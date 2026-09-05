@@ -93,26 +93,31 @@ class Trainer:
         norm_mean: Optional[np.ndarray] = None,
         norm_std: Optional[np.ndarray] = None,
         thresholds: Optional[np.ndarray] = None,
+        static_thresholds: Optional[np.ndarray] = None,
         var_names: Optional[List[str]] = None,
         vpt_epsilon: float = 0.3,
     ):
         """
         Args:
-            adapter:        fully-built model adapter (adapter.model is initialised).
-            train_loader:   DataLoader for training split.
-            val_loader:     DataLoader for validation split.
-            test_loader:    DataLoader for test split.
-            loss_fn:        loss module (MSELoss or BCEWithLogitsLoss).
-            adj:            static adjacency matrix, shape (N, N), on any device.
-            config:         merged experiment config dict.
-            output_dir:     directory for this seed's checkpoint and logs.
-            seed:           current random seed (used for display only).
-            mlflow_enabled: if False, skip all mlflow.log_* calls.
-            norm_mean:      (1, N, d) train z-score means; used to denorm test metrics.
-            norm_std:       (1, N, d) train z-score stds; used to denorm test metrics.
-            thresholds:     (N, d) extreme-event thresholds in PHYSICAL units.
-            var_names:      list of d variable names (e.g. ERA5_VAR_NAMES).
-            vpt_epsilon:    NRMSE threshold for VPT (fraction of a std).
+            adapter:           fully-built model adapter (adapter.model is initialised).
+            train_loader:      DataLoader for training split.
+            val_loader:        DataLoader for validation split.
+            test_loader:       DataLoader for test split.
+            loss_fn:           loss module (MSELoss or BCEWithLogitsLoss).
+            adj:               static adjacency matrix, shape (N, N), on any device.
+            config:            merged experiment config dict.
+            output_dir:        directory for this seed's checkpoint and logs.
+            seed:              current random seed (used for display only).
+            mlflow_enabled:    if False, skip all mlflow.log_* calls.
+            norm_mean:         (1, N, d) train z-score means; used to denorm test metrics.
+            norm_std:          (1, N, d) train z-score stds; used to denorm test metrics.
+            thresholds:        scheme-selected thresholds (may be 2-D static or 4-D CH).
+            static_thresholds: always (N, d) 2-D static thresholds for regression
+                               stratification (mae_extreme / mae_nonextreme /
+                               peak_intensity_error). When None, falls back to
+                               thresholds if it is already 2-D; otherwise no mask.
+            var_names:         list of d variable names (e.g. ERA5_VAR_NAMES).
+            vpt_epsilon:       NRMSE threshold for VPT (fraction of a std).
         """
         self.adapter = adapter
         self.train_loader = train_loader
@@ -126,9 +131,19 @@ class Trainer:
 
         self.norm_mean = norm_mean      # (1, N, d)
         self.norm_std = norm_std        # (1, N, d)
-        self.thresholds = thresholds    # (N, d), PHYSICAL units
+        self.thresholds = thresholds    # scheme-selected (may be 4-D for CH runs)
         self.var_names = var_names
         self.vpt_epsilon = vpt_epsilon
+
+        # _static_thresholds is always 2-D (N, d) for regression stratification.
+        # Prefer the explicit static_thresholds arg; fall back to thresholds only
+        # when it is already 2-D so legacy callers without the new arg still work.
+        if static_thresholds is not None:
+            self._static_thresholds = static_thresholds
+        elif thresholds is not None and np.asarray(thresholds).ndim == 2:
+            self._static_thresholds = thresholds
+        else:
+            self._static_thresholds = None
 
         # Phase 2: label variable names (subset of var_names). Falls back to
         # var_names if not set — appropriate for regression and for the legacy
@@ -279,7 +294,8 @@ class Trainer:
                 train_loss, grad_norm = self._train_epoch()
                 val_loss = self._validate_epoch()
 
-                self.scheduler.step()
+                if self.scheduler is not None:
+                    self.scheduler.step()
                 self._save_checkpoint(val_loss)
 
                 history["train_loss"].append(train_loss)
@@ -506,6 +522,7 @@ class Trainer:
         signal at a fraction of the cost. `force_full=True` bypasses the
         subsample — used for the end-of-training final eval.
         """
+        self.adapter.model.eval()
         total_loss = 0.0
         n_batches = 0
         native = self._uses_native_loss()
@@ -553,16 +570,13 @@ class Trainer:
 
     def _build_extreme_mask(self, targets_norm: np.ndarray) -> Optional[np.ndarray]:
         """targets_norm: (samples, H, N, d). Returns (samples, H, N, d) bool, or None."""
-        if self.thresholds is None or self.norm_mean is None or self.norm_std is None:
-            return None
-        # calendar_hour_relative thresholds are (N, D, 366, 24) — cannot broadcast
-        # against (samples, H, N, d) without per-sample timestamp indexing. Skip.
-        if self.thresholds.ndim != 2:
+        thr = self._static_thresholds   # always 2-D (N, d) or None
+        if thr is None or self.norm_mean is None or self.norm_std is None:
             return None
         m = self.norm_mean.reshape(1, 1, *self.norm_mean.shape[-2:])
         s = self.norm_std.reshape(1, 1, *self.norm_std.shape[-2:])
         targets_phys = targets_norm * s + m
-        return targets_phys > self.thresholds[None, None, :, :]
+        return targets_phys > thr[None, None, :, :]
 
     def _save_per_station(self, per_station: dict) -> None:
         """Save (N, d) per-station arrays for Phase 3 geographic stratification."""
@@ -601,6 +615,7 @@ class Trainer:
 
     def _evaluate_test(self) -> Dict[str, Any]:
         """Load best checkpoint and evaluate on the test set."""
+        self.adapter.model.eval()
         # TODO(perf): stream test eval. At 999 nodes the accumulated all_preds +
         # all_targets reach ~35 GB peak (45K samples × 12H × 999N × 8d × 4B × 2),
         # forcing --mem=128G. Refactor to compute metrics chunk-by-chunk so we
@@ -659,15 +674,17 @@ class Trainer:
                 # (a) + (b): always slice stats to target channel
                 eval_mean = self.norm_mean[..., tv_idx:tv_idx + 1] if self.norm_mean is not None else None
                 eval_std  = self.norm_std[...,  tv_idx:tv_idx + 1] if self.norm_std  is not None else None
-                eval_thresholds = self.thresholds[..., tv_idx:tv_idx + 1] if self.thresholds is not None else None
-                eval_var_names  = [self.var_names[tv_idx]] if self.var_names is not None else None
-                # Also swap in the sliced thresholds for _build_extreme_mask
-                saved_thresholds, saved_mean, saved_std = self.thresholds, self.norm_mean, self.norm_std
-                self.thresholds, self.norm_mean, self.norm_std = eval_thresholds, eval_mean, eval_std
+                eval_reg_thr   = self._static_thresholds[..., tv_idx:tv_idx + 1] if self._static_thresholds is not None else None
+                eval_var_names = [self.var_names[tv_idx]] if self.var_names is not None else None
+                # Temporarily swap the sliced static thresholds and stats so
+                # _build_extreme_mask sees the correct (N, 1) threshold column
+                # and the correct (1, N, 1) mean/std for denormalisation.
+                saved_reg_thr, saved_mean, saved_std = self._static_thresholds, self.norm_mean, self.norm_std
+                self._static_thresholds, self.norm_mean, self.norm_std = eval_reg_thr, eval_mean, eval_std
                 try:
                     mask = self._build_extreme_mask(targets)
                 finally:
-                    self.thresholds, self.norm_mean, self.norm_std = saved_thresholds, saved_mean, saved_std
+                    self._static_thresholds, self.norm_mean, self.norm_std = saved_reg_thr, saved_mean, saved_std
             else:
                 eval_mean = self.norm_mean
                 eval_std = self.norm_std
@@ -771,7 +788,7 @@ class Trainer:
             "epoch": int(epoch),
             "model_state": self.adapter.model.state_dict(),
             "optimizer_state": self.optimiser.state_dict(),
-            "scheduler_state": self.scheduler.state_dict(),
+            "scheduler_state": self.scheduler.state_dict() if self.scheduler is not None else None,
             "best_val_loss": float(self.best_val_loss),
             "patience_counter": int(self.patience_counter),
             "diverged_streak": int(self.diverged_streak),
@@ -818,7 +835,8 @@ class Trainer:
             for k, v in opt_state.items():
                 if isinstance(v, torch.Tensor):
                     opt_state[k] = v.to(self.device)
-        self.scheduler.load_state_dict(state["scheduler_state"])
+        if self.scheduler is not None and state.get("scheduler_state") is not None:
+            self.scheduler.load_state_dict(state["scheduler_state"])
         self.best_val_loss = float(state["best_val_loss"])
         self.patience_counter = int(state["patience_counter"])
         self.diverged_streak = int(state.get("diverged_streak", 0))

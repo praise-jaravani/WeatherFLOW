@@ -1,0 +1,39 @@
+# SAWS Lekuba 25-station reference config (2013-2020, all 6 features, ≤10% missing)
+#
+# This file is NOT loaded automatically — cli.py's load_config() keys by MODEL
+# name, not dataset. Use this file as the reference for SAWS-specific
+# preprocessing keys, then either:
+#   (a) copy the `data:` and `preprocessing:` blocks below into your model's
+#       yaml (e.g. experiments/configs/mtgode.yaml), OR
+#   (b) inject at CLI time:
+#         python cli.py --model mtgode --dataset saws --task regression \
+#             --config.preprocessing.exclusion_threshold 0.10 \
+#             --config.preprocessing.distance_threshold_km 500 \
+#             --config.preprocessing.sigma_km 200
+#
+# The parser (preprocessing/saws_parser.py) enforces the 10% station selection
+# threshold internally, so exclusion_threshold=0.10 here just prevents the
+# pipeline's second-stage exclusion from dropping anything the parser kept.
+# See data/saws/PLAN.md for the full audit + design rationale.
+
+data:
+  input_len: 24              # 24 h context, matches Davidson (2022) short setting
+  horizon: 24                # 24 h prediction per Moodley redirect
+  # Phase 2 (classification) — ignored for regression runs
+  label_mode: per_variable
+  label_variables: [t2m, tp, rh, ws, sp]   # WD excluded — 95th-percentile "extreme direction" is meaningless
+  decision_threshold: val_f1
+
+preprocessing:
+  # Davidson (2022) methodology — DIFFERS from ERA5 defaults (5% / 300 km / 100 km)
+  exclusion_threshold: 0.10       # <10% missing per station, per Davidson §3.2
+  distance_threshold_km: 500.0    # SAWS station spacing (~50-500 km typical)
+  sigma_km: 200.0                 # Gaussian bandwidth
+  clip_sigma: 10.0                # kept from ERA5 defaults; SAWS Rain is even more skewed
+  # Splits: default 60/20/20 chronological. Davidson used 27-split walk-forward;
+  # can be added later as split_mode: walk_forward.
+  train_ratio: 0.6
+  val_ratio: 0.2
+
+evaluation:
+  vpt_epsilon: 0.3

@@ -36,6 +36,7 @@ ADAPTER_REGISTRY = {
     "agcrn":     "models.baselines.agcrn_adapter.AGCRNAdapter",
     "clcrn":     "models.baselines.clcrn_adapter.CLCRNAdapter",
     "mtgode":    "models.continuous_time.mtgode_adapter.MTGODEAdapter",
+    "stgode":    "models.continuous_time.stgode_adapter.STGODEAdapter",
     "climode":   "models.continuous_time.climode_adapter.ClimODEAdapter",
     "stlgru":    "models.lightweight.stlgru_adapter.STLGRUAdapter",
     "litestgnn": "models.lightweight.litestgnn_adapter.LiteSTGNNAdapter",
@@ -189,9 +190,12 @@ def make_output_dir(model: str, dataset: str, task: str) -> Path:
 # ---------------------------------------------------------------------------
 
 def _build_loss(task: str, train_loader, device: torch.device) -> torch.nn.Module:
-    from training.losses import mse_loss, compute_class_weights, wbce_loss  # noqa: PLC0415
+    from training.losses import mae_loss, compute_class_weights, wbce_loss  # noqa: PLC0415
     if task == "regression":
-        return mse_loss()
+        # Uniform MAE across MTGODE / AGCRN / CLCRN per the 2026-08-08 audit
+        # + loss decision. Provenance: MTGODE §4.4, AGCRN L1Loss default,
+        # CLCRN masked_mae_loss default. See training/losses.py + HYPERPARAMETERS.md.
+        return mae_loss()
 
     # Classification: derive per-variable class weights from training labels.
     # Per Phase-2 plan §3.2 pos_weight is a vector of length d_label.
@@ -348,6 +352,7 @@ def _subsample_nodes(train_loader, val_loader, test_loader, adj, meta, max_nodes
     new_meta["mean"]    = cached["mean"][:, :N, :]
     new_meta["std"]     = cached["std"] [:, :N, :]
     new_meta["thresholds"] = cached["thresholds"][:N, :]
+    new_meta["static_thresholds"] = cached["thresholds"][:N, :]
 
     input_len  = config["data"]["input_len"]
     horizon    = config["data"]["horizon"]
@@ -528,6 +533,7 @@ def main():
                 norm_mean=meta["mean"],
                 norm_std=meta["std"],
                 thresholds=meta["thresholds"],
+                static_thresholds=meta.get("static_thresholds"),
                 var_names=meta.get("var_names", ERA5_VAR_NAMES),
                 vpt_epsilon=vpt_epsilon,
             ).train()

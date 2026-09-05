@@ -1,49 +1,107 @@
 # MTGODE — Multi-scale Temporal Graph ODE
 # Continuous-time model (Praise's workstream).
-# ODE solver settings: loose tolerances during training, tight at evaluation.
-# See mtgode_adapter.py and modules/ode_integrator.py.
+# All values follow Jin et al. (MTGODE paper) §5.2 multi-step forecasting
+# configuration (METR-LA setting), with the audit fixes for Findings 0/2/5.
+#
+# 2026-08-04: values re-aligned to paper defaults per methodological review.
+# 2026-08-08: audit fixes for Findings 0/2/5 folded in (see comments in ode: block).
+# 2026-08-10: HPO v1 (random search) PARKED — superseded by v2.
+# 2026-08-13: HPO v2 winner adopted (see specs/HYPERPARAMETERS.md § HPO v2).
+#             Sequential Optuna TPE + MedianPruner, 30 trials, seed=42 fixed,
+#             train_hours_cap=17520, target=t2m. Winner: trial 17,
+#             val_mae=0.3485 on cap-2yr-train protocol.
+#             Confirmation stage SKIPPED (approved 2026-08-13): TPE re-sampled
+#             the winning config 4 times (trials 17/19/27/28, all identical
+#             val_mae 0.3485); runner-up (trial 21, batch=32 vs 128) at 0.3505
+#             = 0.002 behind; full top-10 spread 0.003 val_mae, far below the
+#             expected seed noise floor (~0.15 from Phase-1 MTGODE). Health
+#             gate (scripts/health_gate.py) + 10-seed campaign provide the
+#             equivalent multi-seed rigour in-campaign. Rationale documented
+#             in specs/HYPERPARAMETERS.md § HPO v2 winners.
 
 model:
   name: mtgode
-  hidden_dim: 40
+  hidden_dim: 64          # HPO v2 winner (also Jin et al. §5.2 default).
+                          # NOTE (audit 2026-08-08): pre-audit this was also fed to
+                          # node_dim, which conflated the graph-learner embedding
+                          # dim (paper: 40) with conv_channels (paper: 64).
+                          # Now node_dim lives under graph_constructor below and
+                          # is decoupled from this key.
   num_layers: 2
-  dropout: 0.3
-  # Adaptive graph construction (from original MTGODE repo)
+  dropout: 0.1            # HPO v2 winner (paper default was 0.3; search chose 0.1)
+  # Adaptive graph construction — Jin et al. cites "settings suggested by [19]" (MTGNN).
+  # HPO v2 winner: k=20 (matches MTGNN's original choice at N=207, upper end of our
+  # search space {10, 13, 20}). Density: 20/32 = 62.5%.
   graph_constructor:
-    k: 10                 # top-k neighbours in learned graph
-    alpha: 3              # saturation rate of tanh
+    k: 20                 # HPO v2 winner
+    alpha: 3              # Jin et al. / MTGNN default; pinned (not searched in HPO v2)
+    node_dim: 40          # (audit Finding 2) paper §5.2 = MTGNN's node-embedding dim 40;
+                          #                   NOT the same as conv_channels/hidden_dim above.
+                          #                   Pinned (not searched in HPO v2 per audit).
 
 training:
-  learning_rate: 0.001
-  batch_size: 32
-  epochs: 100
-  early_stopping_patience: 15
+  learning_rate: 6.0e-3   # HPO v2 winner (Jin et al. §5.2 default was 1e-3)
+  batch_size: 128         # HPO v2 winner (Jin et al. §5.2 default was 64)
+  epochs: 200             # Jin et al. §5.2: 200 epochs (early stopping does the real work)
+  early_stopping_patience: 15    # our harness addition; disclosed as uniform
   gradient_clip_max_norm: 5.0
   scheduler:
-    type: CosineAnnealingWarmRestarts
-    T_0: 10
-    T_mult: 2
-    eta_min: 1.0e-6
+    # Jin et al. (2022) run_multi_step.py:99 + run/metr-la.sh:
+    # MultiStepLR(milestones=[100], gamma=0.1) — single LR step-drop at epoch 100
+    # by ×0.1. Confirmed from local MTGODE repo clone (2026-08-24).
+    # Previous harness used CosineAnnealingWarmRestarts (not from paper).
+    type: multistep
+    milestones: [100]
+    gamma: 0.1
 
 ode:
   # MTGODE's ODEBlock only accepts 'euler' or 'rk4' (raises ValueError for others)
-  method_1: euler         # outer temporal ODE — fixed-step solvers only
+  method_1: euler         # Jin et al. §5.2 (METR-LA uses Euler for the outer CTA solver)
   method_2: euler         # inner graph ODE (inside CGP layers)
-  adjoint: true           # adjoint method for memory-efficient backprop
-  time_1: 1.2
-  step_size_1: 0.4
+  adjoint: false          # (audit Finding 0, 2026-08-08) MUST be false: adjoint mode
+                          # silently severs the graph learner's gradients (gc.emb1/emb2/
+                          # lin1/lin2 are outside func.parameters() so odeint_adjoint's
+                          # backward skips them; the adaptive adjacency stays at random
+                          # init for the whole run). Pre-audit runs (ERA5 archive +
+                          # 25-node SAWS) trained a functionally graph-frozen MTGODE.
+                          # At N=32 the memory case for adjoint mode is void.
+  cgp_alpha: 2.0          # (audit Finding 5, 2026-08-08) CGPFunc: f = 0.5·α·(Âx − x).
+                          # Paper Eq. 6 dH/dt = (Â − I)H requires α=2.0. Pre-audit
+                          # code hardcoded α=1.0 — mathematically equivalent to
+                          # integrating the CGP to T=0.5, not the configured T=1.0.
+  # Jin et al. §5.2 sets a single (T, Δt) pair for both solvers: T=1.0, Δt=0.25.
+  # Their Fig. 5 ablation shows RMSE is nearly flat across integration times 0.25-4.0.
+  time_1: 1.0
+  step_size_1: 0.25
   time_2: 1.0
   step_size_2: 0.25
+  # rtol/atol are ignored by fixed-step solvers (euler/rk4) — cosmetic values kept
+  # for schema completeness. Not specified by the paper.
   rtol: 1.0e-4
   atol: 1.0e-3
 
 data:
-  input_len: 12           # T=12 matches Gaibie et al. (2024) HPO optimal for AGCRN; kept uniform across all models
-  horizon: 12             # H: within Gaibie et al. (2024) tested horizons (3/6/9/12/24h)
+  # Jin et al. §5.2 multi-step uses (input=12, horizon=12). We keep input=12
+  # (matches paper + Gaibie's HPO optimum for both AGCRN and CLCRN) and
+  # extend horizon to 48h per Moodley's retrained-24h+ demand. Evaluate at
+  # h ∈ {3, 6, 9, 12, 24, 36, 48} by truncating the 48-step output.
+  # NOTE: 12-in / 48-out is asymmetric — the rollout module
+  # (evaluation/rollout.py) requires input_len == horizon and will raise.
+  # Rollout (RVPT) is dormant for this configuration; direct-multi-step
+  # forecasts are the primary evaluation (VFH via evaluation/vpt_extended.py).
+  input_len: 12
+  horizon: 48             # H=48; retrained-max target per Moodley's 24h+ demand
+  # Gaibie (2024) univariate regime: one experiment per target variable.
+  # Default target = t2m (used by HPO). Production runs iterate over
+  # {t2m, sp, rh, ws} via --config.data.target_variable overrides.
+  target_variable: t2m
   # Phase 2 (classification) — ignored for regression runs
   label_mode: per_variable          # 'per_variable' (§2.1) or 'any' (legacy)
-  label_variables: [t2m, d2m, tp, ws10, rh, sp]   # §2.4 default; u10/v10 excluded
+  label_variables: [t2m, tp, rh, ws]  # SAWS var registry per Gaibie targets (2026-08-04 fix; was ERA5 names)
   decision_threshold: val_f1        # τ per (model, variable) selected on val by max-F1 (§4.3)
+  threshold_scheme: calendar_hour_relative   # CH labels (docs/PHASE2_FORMULATION.md §2.1) — MUST be set
+                                              # or load_cache defaults to `static` (Gaibie 2024 baseline).
+                                              # Fix landed 2026-08-18 after the campaign trained on static.
 
 evaluation:
-  vpt_epsilon: 0.3        # NRMSE threshold for VPT (Platt et al. ~0.3; fraction of a std)
+  vpt_epsilon: 0.3        # NRMSE threshold for VPT (Pathak et al. 2018 ~0.3; fraction of a std)

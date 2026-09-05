@@ -50,7 +50,15 @@ CACHE_DIR = Path(__file__).parent / "cache"
 HASH_FILE = CACHE_DIR / "preprocessing_hash.json"
 
 ERA5_RAW_DIR = Path(__file__).parent.parent / "data" / "era5" / "raw"
-SAWS_RAW_DIR = Path(__file__).parent.parent / "data" / "saws" / "raw"
+# SAWS 32-station block-format workbooks for 2016-2025 (locked 2026-08-08).
+# See preprocessing/saws_parser.py header for the network definition. The
+# earlier Lekuba long-form workbooks (data1.xlsx, data2.xls) that drove the
+# 25-station 2013-2020 campaign live at data/saws/extracted and are still
+# parsed by preprocessing/saws_parser_25node_lekuba.py — not this pipeline.
+SAWS_RAW_DIR = (
+    Path(__file__).parent.parent
+    / "data" / "saws" / "raw" / "SAWS-60-node-campaign" / "SAWS" / "extracted"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -88,27 +96,71 @@ def _era5_month_list(directory: Path) -> List[Tuple[int, int]]:
 # Hash utilities
 # ---------------------------------------------------------------------------
 
+def _preproc_defaults_for(dataset: str) -> Dict[str, Any]:
+    """Dataset-aware defaults matching the run-time branching in run_pipeline.
+
+    Used by compute_data_hash so equivalent-but-differently-expressed configs
+    hash the same. Without this, a config that omits `distance_threshold_km`
+    (relying on the pipeline's default of 500 for SAWS) hashes differently
+    from a config that sets it explicitly to 500 — the previous bug that
+    silently caused cache misses whenever cli.py loaded a model yaml without
+    an explicit `preprocessing:` block. Bug found 2026-08-08 on the HPO smoke.
+    """
+    common = {
+        "input_len":        None,   # required from config["data"]; no default
+        "horizon":          None,   # required from config["data"]; no default
+        "train_ratio":      0.6,
+        "val_ratio":        0.2,
+        "lat_stride":       2,
+        "lon_stride":       2,
+        "derive_variables": True,
+    }
+    if dataset == "saws":
+        common.update({
+            "distance_threshold_km": 500.0,
+            "sigma_km":              200.0,
+            "exclusion_threshold":   0.10,   # Davidson §3.2
+        })
+    else:  # era5 (or unknown → era5-shaped)
+        common.update({
+            "distance_threshold_km": 300.0,
+            "sigma_km":              100.0,
+            "exclusion_threshold":   0.05,
+        })
+    return common
+
+
 def compute_data_hash(dataset: str, config: Dict[str, Any]) -> str:
     """
     SHA-256 fingerprint of raw data manifest (filename stems) + preprocessing
-    config keys.
+    config keys with dataset-aware defaults applied.
 
     Filename stems (e.g. 'era5_southafrica_2010_01') are stable identifiers —
     they change only when new months are added, not when existing files are
     re-touched or re-downloaded.
+
+    Preprocessing keys are resolved against `_preproc_defaults_for(dataset)`
+    so that:
+      config = {"input_len": 12, "horizon": 48}
+    and
+      config = {"input_len": 12, "horizon": 48, "distance_threshold_km": 500.0, ...}
+    hash identically for SAWS. This prevents silent cache invalidation when
+    cli.py loads a model yaml without an explicit `preprocessing:` block.
     """
     h = hashlib.sha256()
     if dataset == "era5":
         manifest = _manifest_fingerprint(ERA5_RAW_DIR, "era5_southafrica_*.nc")
     elif dataset == "saws":
-        manifest = _manifest_fingerprint(SAWS_RAW_DIR, "*.csv")
+        manifest = (_manifest_fingerprint(SAWS_RAW_DIR, "*.xlsx")
+                    + _manifest_fingerprint(SAWS_RAW_DIR, "*.xls"))
     else:
         manifest = []
     h.update(json.dumps(manifest, sort_keys=True).encode())
-    preproc_keys = ["input_len", "horizon", "train_ratio", "val_ratio",
-                    "lat_stride", "lon_stride", "distance_threshold_km",
-                    "sigma_km", "derive_variables"]
-    h.update(json.dumps({k: config.get(k) for k in preproc_keys}, sort_keys=True).encode())
+
+    defaults = _preproc_defaults_for(dataset)
+    resolved = {k: (config.get(k) if config.get(k) is not None else defaults.get(k))
+                for k in defaults}
+    h.update(json.dumps(resolved, sort_keys=True).encode())
     h.update(dataset.encode())
     return h.hexdigest()
 
@@ -145,6 +197,18 @@ def load_cache(dataset: str) -> Dict[str, Any]:
     tp_wet_path = prefix / "tp_wet_trigger.npy"
     if tp_wet_path.exists():
         result["tp_wet_trigger"] = np.load(str(tp_wet_path))
+    # Calendar-hour scheme artefacts (Phase-2 v2). Present iff
+    # scripts/build_ch_labels.py has been run. Optional — the caller
+    # decides which scheme to use via config.data.threshold_scheme.
+    for name in ("thresholds_ch", "y_train_ch", "y_val_ch", "y_test_ch",
+                 "tp_wet_trigger_ch"):
+        p = prefix / f"{name}.npy"
+        if p.exists():
+            result[name] = np.load(str(p))
+    ch_meta_path = prefix / "labels_ch_meta.json"
+    if ch_meta_path.exists():
+        with open(ch_meta_path) as f:
+            result["labels_ch_meta"] = json.load(f)
     return result
 
 
@@ -254,15 +318,28 @@ def run_pipeline(
     data_cfg        = config.get("data", {})
     label_mode      = data_cfg.get("label_mode", "per_variable")
     label_variables = data_cfg.get("label_variables", None)
+    # Regression: univariate target per Gaibie (2024) — None means multivariate
+    # output (all features predicted jointly, legacy behaviour).
+    target_variable = data_cfg.get("target_variable", None)
 
     preproc = config.get("preprocessing", {})
     train_ratio           = preproc.get("train_ratio", 0.6)
     val_ratio             = preproc.get("val_ratio", 0.2)
     lat_stride            = preproc.get("lat_stride", 2)
     lon_stride            = preproc.get("lon_stride", 2)
-    distance_threshold_km = preproc.get("distance_threshold_km", 300.0)
-    sigma_km              = preproc.get("sigma_km", 100.0)
-    exclusion_threshold   = preproc.get("exclusion_threshold", 0.05)
+    # Dataset-aware defaults: SAWS is a 25-node sparse station network with
+    # ~500 km typical spacing, so ERA5's 300 km/100 km graph defaults leave
+    # some Cape stations (e.g. ALEXANDERBAAI, 449 km from nearest neighbour)
+    # with zero adjacency edges. Its missingness threshold also matches
+    # Davidson (2022)'s <10% rather than ERA5's stricter 5%.
+    if dataset == "saws":
+        distance_threshold_km = preproc.get("distance_threshold_km", 500.0)
+        sigma_km              = preproc.get("sigma_km", 200.0)
+        exclusion_threshold   = preproc.get("exclusion_threshold", 0.10)
+    else:
+        distance_threshold_km = preproc.get("distance_threshold_km", 300.0)
+        sigma_km              = preproc.get("sigma_km", 100.0)
+        exclusion_threshold   = preproc.get("exclusion_threshold", 0.05)
     # Clip normalized feature values to ±clip_sigma standard deviations.
     # ERA5 total precipitation (tp) is extremely right-skewed — raw z-scores
     # reach 57σ, causing NaN in model activations after a few gradient steps.
@@ -285,9 +362,39 @@ def run_pipeline(
         X_train = np.clip(cached.pop("X_train"), -clip_sigma, clip_sigma)
         X_val   = np.clip(cached.pop("X_val"),   -clip_sigma, clip_sigma)
         X_test  = np.clip(cached.pop("X_test"),  -clip_sigma, clip_sigma)
-        y_train = cached.pop("y_train")
-        y_val   = cached.pop("y_val")
-        y_test  = cached.pop("y_test")
+        # Threshold-scheme dispatch (Phase-2 §2 update, 2026-08-13). Static is
+        # the legacy behaviour and remains the default; calendar_hour_relative
+        # uses the ETCCDI-style windowed-percentile artefacts built by
+        # scripts/build_ch_labels.py. The scheme lives in config.data because
+        # it changes labels, not features — no cache hash change; static and
+        # ch artefacts coexist so Phase-1 metrics remain reproducible.
+        threshold_scheme = (config.get("data", {}) or {}).get(
+            "threshold_scheme", "static"
+        )
+        if threshold_scheme == "calendar_hour_relative":
+            required = ("y_train_ch", "y_val_ch", "y_test_ch", "thresholds_ch")
+            missing = [k for k in required if k not in cached]
+            if missing:
+                raise FileNotFoundError(
+                    f"threshold_scheme='calendar_hour_relative' but the ch "
+                    f"artefacts are absent from the {dataset} cache "
+                    f"(missing: {missing}). Run scripts/build_ch_labels.py "
+                    f"once to populate them (~30s), then re-run."
+                )
+            y_train = cached.pop("y_train_ch"); _ = cached.pop("y_train", None)
+            y_val   = cached.pop("y_val_ch");   _ = cached.pop("y_val",   None)
+            y_test  = cached.pop("y_test_ch");  _ = cached.pop("y_test",  None)
+            thresholds_out = cached["thresholds_ch"]
+        elif threshold_scheme == "static":
+            y_train = cached.pop("y_train")
+            y_val   = cached.pop("y_val")
+            y_test  = cached.pop("y_test")
+            thresholds_out = cached["thresholds"]
+        else:
+            raise ValueError(
+                f"data.threshold_scheme={threshold_scheme!r} not recognised. "
+                f"Expected 'static' or 'calendar_hour_relative'."
+            )
         print(f"[mem] {_rss_gib():.2f} GiB after clip + pop", flush=True)
         train_loader, val_loader, test_loader = build_dataloaders(
             X_train, X_val, X_test,
@@ -296,14 +403,27 @@ def run_pipeline(
             batch_size=batch_size, num_workers=num_workers,
             label_mode=label_mode, var_names=meta.get("var_names"),
             label_variables=label_variables,
+            target_variable=target_variable,
         )
         print(f"[mem] {_rss_gib():.2f} GiB after build_dataloaders", flush=True)
         meta.update({"mean": cached["mean"], "std": cached["std"],
-                     "thresholds": cached["thresholds"],
+                     "thresholds": thresholds_out,
+                     # static_thresholds is always the 2-D (N, d) per-station
+                     # 95th-percentile array, regardless of threshold_scheme.
+                     # Regression stratification (mae_extreme / mae_nonextreme /
+                     # peak_intensity_error) uses this directly so it is never
+                     # accidentally wired to the 4-D calendar-hour-relative tensor.
+                     "static_thresholds": cached["thresholds"],
+                     "threshold_scheme": threshold_scheme,
                      "coords": cached["coords"],
                      "label_mode": label_mode,
                      "label_variables": label_variables or meta.get("var_names"),
-                     "tp_wet_trigger": cached.get("tp_wet_trigger")})
+                     "target_variable": target_variable,
+                     "tp_wet_trigger": cached.get("tp_wet_trigger_ch")
+                                         if threshold_scheme == "calendar_hour_relative"
+                                         else cached.get("tp_wet_trigger")})
+        if threshold_scheme == "calendar_hour_relative" and "labels_ch_meta" in cached:
+            meta["labels_ch_meta"] = cached["labels_ch_meta"]
         return train_loader, val_loader, test_loader, adj, meta
 
     # 1. Parse -----------------------------------------------------------
@@ -407,12 +527,14 @@ def run_pipeline(
         batch_size=batch_size, num_workers=num_workers,
         label_mode=label_mode, var_names=var_names,
         label_variables=label_variables,
+        target_variable=target_variable,
     )
     coords_arr = coords[["lat", "lon"]].values.astype(np.float32)
     meta.update({
         "mean": mean, "std": std, "thresholds": thresholds, "coords": coords_arr,
         "label_mode": label_mode,
         "label_variables": label_variables or var_names,
+        "target_variable": target_variable,
         "tp_wet_trigger": tp_wet_trigger,
     })
     return train_loader, val_loader, test_loader, adj, meta

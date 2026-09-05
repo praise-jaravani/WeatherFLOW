@@ -5,9 +5,31 @@ Builds the static graph A of shape (N, N) passed to every model alongside the
 feature tensor X. Default method: Gaussian kernel on haversine distance with a
 hard sparsity cutoff at distance_threshold_km (pairs beyond this receive zero).
 
-graph_utils.py in models/shared_modules/ shares the haversine formula and is
-used for dynamic re-weighting inside model forward passes. This module handles
-the static preprocessing-time graph only.
+Provenance and conventions
+--------------------------
+Thresholded-Gaussian-on-distance is the Davidson & Moodley (2022) ST-GNN paper
+construction (§3.5, Euclidean distances), itself the DCRNN convention (Li et al.
+2018). Ours upgrades Euclidean → haversine because SA lat/lon spans enough
+degrees for Euclidean-in-degrees to systematically distort distances.
+
+Two convention deltas vs the DCRNN lineage that must be disclosed if any model
+consumes A: (1) we zero the diagonal (DCRNN keeps w_ii = 1); (2) we row-
+normalise (DCRNN typically uses the kernel weights directly or symmetric
+normalisation). Legitimate downstream choices; documented here so consumers
+know.
+
+A as a shared interface, not a shared method
+--------------------------------------------
+Whether any given model actually reads A is *per-adapter*. AGCRN and MTGODE
+generate their own graphs from learned embeddings; CLCRN builds K-nearest-
+neighbour spherical neighbourhoods from node coordinates. In those cases A is
+inert plumbing — kept in the pipeline so downstream teammate models that
+DO consume adjacency (STLGRU, DiffSTG-family, USTD-spirit) have something to
+buffer. See specs/ADJACENCY_AUDIT.md for the empirical probe verdicts.
+
+The above design means graph.py is INTENTIONALLY conservative: refinements
+must be additive/opt-in. Do not change output semantics without checking every
+downstream adapter that reads A as a buffer.
 """
 
 import numpy as np
@@ -15,13 +37,18 @@ import pandas as pd
 
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Great-circle distance in kilometres between two lat/lon points."""
+    """Great-circle distance in kilometres between two lat/lon points.
+
+    Clip guard on sqrt(a): antipodal points and float rounding can push `a`
+    above 1.0, making arcsin NaN. The vectorised path (build_distance_matrix)
+    has this guard already; this scalar path was missing it — parity fix.
+    """
     R = 6371.0
     phi1, phi2 = np.radians(lat1), np.radians(lat2)
     dphi = np.radians(lat2 - lat1)
     dlam = np.radians(lon2 - lon1)
     a = np.sin(dphi / 2) ** 2 + np.cos(phi1) * np.cos(phi2) * np.sin(dlam / 2) ** 2
-    return float(2 * R * np.arcsin(np.sqrt(a)))
+    return float(2 * R * np.arcsin(np.clip(np.sqrt(a), 0, 1)))
 
 
 def build_distance_matrix(coords: pd.DataFrame) -> np.ndarray:

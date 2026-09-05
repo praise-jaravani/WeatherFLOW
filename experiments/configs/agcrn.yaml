@@ -1,32 +1,60 @@
 # AGCRN — Adaptive Graph Convolutional Recurrent Network
-# Baseline model. Hyperparameters from Gaibie et al. (2024) Table 1 (HPO optimal values).
+# Baseline model. Values for the HPO-optimised campaign:
+#   Gen's Optuna TPE HPO on N=32 SAWS network (used as final — our hpo_agcrn_v2
+#   study was cancelled after CLCRN results converged; Gen's results adopted directly)
+#   Bai et al. (2020) — original AGCRN paper (architecture-only knobs)
+#
+# 2026-09-01 HPO-campaign update:
+#   lr 0.003 → 0.0002 (Gen's HPO winner, Optuna TPE on N=32 SAWS)
+#   batch_size 64 → 32 (Gen's HPO winner)
+#   embed_dim 10 → 30 (Gen's HPO winner)
+#   input_len 12 → 24 (Gen's HPO winner; search space {12, 24, 48})
+#   epochs 40 → 100 (Bai §4.2 paper protocol; at lr=0.0002 + no scheduler,
+#                    40 epochs is insufficient runway — early stopping handles exit)
+#   scheduler CosineAnnealingWarmRestarts → none (paper faithful: Bai 2020 uses
+#                    constant-lr Adam; CAWR interaction caused instability at lr=0.01)
 
 model:
   name: agcrn
-  hidden_dim: 64          # Gaibie et al. (2024): RNN units = 64
-  num_layers: 2           # Gaibie et al. (2024): num layers = 2
-  embed_dim: 10            # node embedding dimension for adaptive graph
-  cheb_k: 2               # Chebyshev polynomial order
+  hidden_dim: 64          # Gen HPO winner (= Gaibie et al. 2024 RNN units = 64)
+  num_layers: 2           # Gen HPO winner (= Gaibie et al. 2024)
+  embed_dim: 30           # Gen HPO winner
+  cheb_k: 2               # Bai et al. (2020) default (Chebyshev polynomial order)
 
 training:
-  learning_rate: 0.01     # Gaibie et al. (2024): optimal lr = 0.01
-  batch_size: 64          # Gaibie et al. (2024): optimal batch size = 64
-  epochs: 100
-  early_stopping_patience: 15
+  # Gen's Optuna TPE HPO on N=32 SAWS network, target=t2m.
+  # Search space: lr (1e-4, 5e-2) log, batch {32,64,128}, input_len {12,24,48},
+  # num_layers (1,4), rnn_units {16,32,64}, embed_dim {1,2,3,5,8,10,15,20,30}.
+  # Winner: lr=0.0002, batch=32, input_len=24, num_layers=2, rnn_units=64, embed_dim=30.
+  learning_rate: 2.0e-4   # Gen HPO winner
+  batch_size: 32          # Gen HPO winner
+  epochs: 100             # Bai et al. (2020) §4.2: up to 100 epochs + patience 15
+  early_stopping_patience: 15    # our harness addition; disclosed as uniform
   gradient_clip_max_norm: 5.0
   scheduler:
-    type: CosineAnnealingWarmRestarts
-    T_0: 10
-    T_mult: 2
-    eta_min: 1.0e-6
+    # Bai et al. (2020) uses no LR scheduler — constant Adam lr.
+    # Previous harness used CosineAnnealingWarmRestarts which caused a restart
+    # interaction under lr=0.01 (patience killed at epoch 16 mid-restart).
+    # At lr=0.0002 (Gen HPO winner) a constant schedule is both paper-faithful
+    # and avoids the CAWR restart hazard.
+    type: none
 
 data:
-  input_len: 12           # T: Gaibie et al. (2024) HPO optimal for AGCRN = 12h
-  horizon: 12             # H: within Gaibie et al. (2024) tested horizons (3/6/9/12/24h)
+  # Horizon extended to 48 (2026-08-04): retrained-max target per Moodley's
+  # 24h+ demand. Evaluate at h ∈ {3, 6, 9, 12, 24, 36, 48} by truncation.
+  # Gen HPO winner: input_len=24 (search space {12, 24, 48}).
+  input_len: 24
+  horizon: 48             # H=48; retrained-max target
+  # Gaibie (2024) univariate regime. Default HPO target = t2m. Production
+  # runs iterate over {t2m, sp, rh, ws} via CLI overrides.
+  target_variable: t2m
   # Phase 2 (classification) — ignored for regression runs
   label_mode: per_variable          # 'per_variable' (§2.1) or 'any' (legacy)
-  label_variables: [t2m, d2m, tp, ws10, rh, sp]   # §2.4 default; u10/v10 excluded
+  label_variables: [t2m, tp, rh, ws]  # SAWS var registry per Gaibie targets (2026-08-04 fix; was ERA5 names)
   decision_threshold: val_f1        # τ per (model, variable) selected on val by max-F1 (§4.3)
+  threshold_scheme: calendar_hour_relative   # CH labels (docs/PHASE2_FORMULATION.md §2.1) — MUST be set
+                                              # or load_cache defaults to `static` (Gaibie 2024 baseline).
+                                              # Fix landed 2026-08-18 after the campaign trained on static.
 
 evaluation:
-  vpt_epsilon: 0.3        # NRMSE threshold for VPT (Platt et al. ~0.3; fraction of a std)
+  vpt_epsilon: 0.3        # NRMSE threshold for VPT (Pathak et al. 2018 ~0.3; fraction of a std)

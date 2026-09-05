@@ -1,0 +1,102 @@
+# STGODE — Spatial-Temporal Graph ODE (Fang et al., KDD 2021)
+# arXiv 2106.12931 · https://github.com/square-coder/STGODE
+#
+# 2026-08-11 REWRITE per peer-review audit (specs/STGODE_INTEGRATION_AUDIT.md):
+#   - Graph construction DEFAULT is now paper Eq. 4 (spatial) + Eq. 6 (semantic).
+#     Upstream's z-scored recipe is retained as an opt-in ablation under
+#     `model.graph_construction: upstream` — on our haversine matrix (no
+#     inf-mask) the z-scored kernel collapses to a near-uniform "graph".
+#   - `ode.time` is now a LIVE knob (wrapper overrides upstream's hardcoded 6
+#     via post-construction ODEblock walk). Previously dead.
+#   - `data.input_len` PINNED at 12 (upstream STGCNBlock hardcodes
+#     temporal_dim=12; wrapper asserts).
+#   - Loss remains uniform MAE (cross-family; different from paper's SmoothL1).
+#   - Scheduler remains CosineAnnealingWarmRestarts (uniform harness).
+#
+# 2026-08-13: HPO v2 winner adopted (see specs/HYPERPARAMETERS.md § HPO v2).
+#             Sequential Optuna TPE + MedianPruner, 30 trials, seed=42 fixed,
+#             train_hours_cap=17520, target=t2m. Winner: trial 10, val_mae=0.3670.
+#             Confirmation stage SKIPPED (approved 2026-08-13): TPE re-sampled the
+#             winning config 3 times (trials 10/27/28, all identical val_mae 0.3670);
+#             runner-up (trial 13) at 0.3690 = 0.002 behind; full top-10 spread
+#             0.005 val_mae, far below expected seed noise. Note: the winner sits
+#             at the upper end of the search space on THREE knobs (ode.time=12.0,
+#             sigma_km=500, epsilon_dtw=0.8) — a future extended sweep may find
+#             a further-out optimum; flagged in specs/OPTUNA_HPO.md as a known
+#             search-boundary observation.
+
+model:
+  name: stgode
+
+  # ---- Graph construction mode ----
+  # "paper"    → paper Eq. 4 (spatial, raw-distance Gaussian + hard km cutoff)
+  #              + paper Eq. 6 (semantic, raw-DTW threshold). Default.
+  # "upstream" → z-scored kernel matching STGODE/utils.py::read_data. Only for
+  #              paper-vs-upstream sensitivity ablation on this data.
+  graph_construction: paper
+
+  # ---- Paper Eq. 4 / Eq. 6 knobs (used when graph_construction: paper) ----
+  # Spatial (Eq. 4):  A_ij = exp(−d_ij²/σ_km²), zero if d_ij ≥ cutoff_km.
+  # These are the SAME kernel form our own preprocessing pipeline uses at
+  # σ_km=200 / cutoff_km=500 (preprocessing/pipeline.py SAWS branch — see
+  # specs/HYPERPARAMETERS.md). Retained as defaults here so STGODE's spatial
+  # adj is comparable to our other models' pipeline-built adj.
+  sigma_km:    500.0    # HPO v2 winner (search space {100, 200, 500} — winner at upper end)
+  cutoff_km:   500.0    # hard-distance cutoff (paper §5.3-style sparsity, not searched)
+
+  # Semantic (Eq. 6): A_ij = 1 if DTW(X_i, X_j) < ε; 0 otherwise.
+  # ε value chosen from empirical DTW distance range at the corrected-axis
+  # 24-step diurnal profiles (see specs/STGODE_INTEGRATION_AUDIT.md §C2).
+  epsilon_dtw: 0.8      # HPO v2 winner (search space {0.3, 0.5, 0.8} — winner at upper end)
+
+  # ---- Upstream z-scored knobs (used when graph_construction: upstream) ----
+  # Retained per peer-review request for optional sensitivity ablation only.
+  # DO NOT rely on these for production — see audit doc §C1 for why.
+  sigma_sp: 10.0        # upstream args.sigma2
+  thres_sp: 0.5         # upstream args.thres2
+  sigma_se: 0.1         # upstream args.sigma1
+  thres_se: 0.6         # upstream args.thres1
+
+training:
+  # PAPER defaults — every override is annotated "harness (deliberate)" or "HPO v2 winner"
+  learning_rate: 6.0e-3 # HPO v2 winner (Paper: 0.01; search space {1e-4,3e-4,1e-3,2e-3,3e-3,6e-3})
+                        # Note: paper's lr=0.01 exceeds our search ceiling; winner sits at boundary.
+  batch_size: 8         # HPO v2 winner (Paper: 32; search space {8, 16, 32})
+  epochs: 200           # Paper: 200 (upstream args.epochs)
+  early_stopping_patience: 15    # harness (paper has no early stopping)
+  gradient_clip_max_norm: 5.0    # harness (paper doesn't clip)
+  scheduler:
+    # Fang et al. (2021) uses no LR scheduler — constant Adam lr=0.01.
+    # Our HPO winner uses lr=6e-3 with constant schedule.
+    # Previous harness used CosineAnnealingWarmRestarts (not from paper).
+    type: none
+
+ode:
+  # Upstream `odegcn.py:61` calls odeint(f, x, [0, time], method='euler')
+  # with NO options={"step_size": ...} — so this is a SINGLE Euler step of size
+  # `time` (H4 disclosure). To do genuine multi-step integration, wrap upstream
+  # ODEblock.forward to pass options — deferred; documented as inherited faithful.
+  method: euler         # upstream odegcn.py:61 hardcodes 'euler'; overriding requires wrap
+  time: 12.0            # HPO v2 winner (Paper: 6; search space {3.0, 6.0, 12.0})
+                        # LIVE knob — wrapper (stgode_model.py) rewrites ODEblock.t
+                        # after upstream construction. Was DEAD until 2026-08-11 fix.
+  adjoint: false        # upstream odegcn.py:7 hardcodes False; matches our audit
+                        # lesson (MTGODE Finding 0). Overriding would need upstream
+                        # patch — currently disclosure-only.
+
+data:
+  input_len: 12         # PINNED — upstream STGCNBlock temporal_dim=12 (asserted
+                        # in stgode_model.py; changing needs wrapper surgery)
+  horizon: 48           # H=48 harness (paper: 12; Moodley directive)
+  target_variable: t2m  # Adapter loads dtw_matrix_{target_variable}.npy;
+                        # per-target semantic graphs supported via
+                        # scripts/build_stgode_semantic_adj.py --variable X
+  label_mode: per_variable
+  label_variables: [t2m, tp, rh, ws]
+  decision_threshold: val_f1
+
+evaluation:
+  vpt_epsilon: 0.3
+
+preprocessing:
+  cache_dir: preprocessing/cache/saws
